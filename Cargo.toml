@@ -1,0 +1,19 @@
+[package]
+name = "rwasio"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rwasio"
+crate-type = ["cdylib", "staticlib"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = false
+
+[dependencies]
+bitflags = "2.13.0"
