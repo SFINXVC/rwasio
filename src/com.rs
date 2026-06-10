@@ -1,6 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use crate::asio::*;
+use crate::guid;
 use core::ffi::{c_char, c_void};
 use core::marker::PhantomData;
 use core::ptr;
@@ -15,19 +16,8 @@ pub const E_POINTER: Hresult = 0x8000_4003u32 as i32;
 pub const CLASS_E_NOAGGREGATION: Hresult = 0x8004_0110u32 as i32;
 pub const CLASS_E_CLASSNOTAVAILABLE: Hresult = 0x8004_0111u32 as i32;
 
-pub const IID_IUNKNOWN: Guid = Guid {
-    data1: 0,
-    data2: 0,
-    data3: 0,
-    data4: [0xC0, 0, 0, 0, 0, 0, 0, 0x46],
-};
-
-pub const IID_ICLASSFACTORY: Guid = Guid {
-    data1: 1,
-    data2: 0,
-    data3: 0,
-    data4: [0xC0, 0, 0, 0, 0, 0, 0, 0x46],
-};
+pub const IID_IUNKNOWN: Guid = guid!("00000000-0000-0000-C000-000000000046");
+pub const IID_ICLASSFACTORY: Guid = guid!("00000001-0000-0000-C000-000000000046");
 
 static OBJECT_COUNT: AtomicU32 = AtomicU32::new(0);
 static SERVER_LOCKS: AtomicU32 = AtomicU32::new(0);
@@ -305,8 +295,8 @@ impl<T: AsioClass> ClassFactory<T> {
 
 /// # Safety
 ///
-/// `rclsid` and `riid` must point to valid `Guid` values, and `ppv` must point to
-/// a valid, writable `*mut c_void`. Called by COM via the `DllGetClassObject` export.
+/// `rclsid` and `riid` must be valid non-null pointers to `GUID`. `ppv` must be
+/// either null or a valid pointer to a `*mut c_void` that can be written to.
 pub unsafe fn dll_get_class_object<T: AsioClass>(
     rclsid: Refiid,
     riid: Refiid,
@@ -342,15 +332,22 @@ pub fn dll_can_unload_now() -> Hresult {
 #[macro_export]
 macro_rules! export_asio_driver {
     ($t:ty) => {
+        /// # Safety
+        ///
+        /// Called by COM runtime. `rclsid` and `riid` must be valid non-null `GUID`
+        /// pointers. `ppv` must be null or a valid writable `*mut c_void` pointer.
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn DllGetClassObject(
             rclsid: $crate::asio::Refiid,
             riid: $crate::asio::Refiid,
             ppv: *mut *mut core::ffi::c_void,
-        ) -> i32 {
+        ) -> i32 { unsafe {
             $crate::com::dll_get_class_object::<$t>(rclsid, riid, ppv)
-        }
+        }}
 
+        /// # Safety
+        ///
+        /// Called by COM runtime to check if the DLL can be unloaded.
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn DllCanUnloadNow() -> i32 {
             $crate::com::dll_can_unload_now()

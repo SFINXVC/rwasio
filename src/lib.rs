@@ -1,5 +1,6 @@
 pub mod asio;
 pub mod com;
+pub mod driver;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn HelloFromLinux() -> i32 {
