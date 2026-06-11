@@ -61,7 +61,7 @@ pub enum AsioError {
     NoMemory = -994,
 }
 
-pub type AsioResult = Result<(), AsioError>;
+pub type AsioResult<T> = Result<T, AsioError>;
 
 impl From<AsioError> for Error {
     fn from(e: AsioError) -> Error {
@@ -212,10 +212,10 @@ pub struct Time {
 #[repr(C, packed(4))]
 pub struct Callbacks {
     pub buffer_switch:
-        Option<unsafe extern "system" fn(double_buffer_index: i32, direct_process: Bool)>,
-    pub sample_rate_did_change: Option<unsafe extern "system" fn(s_rate: SampleRate)>,
+        Option<unsafe extern "win64" fn(double_buffer_index: i32, direct_process: Bool)>,
+    pub sample_rate_did_change: Option<unsafe extern "win64" fn(s_rate: SampleRate)>,
     pub asio_message: Option<
-        unsafe extern "system" fn(
+        unsafe extern "win64" fn(
             selector: i32,
             value: i32,
             message: *mut c_void,
@@ -223,7 +223,7 @@ pub struct Callbacks {
         ) -> i32,
     >,
     pub buffer_switch_time_info: Option<
-        unsafe extern "system" fn(
+        unsafe extern "win64" fn(
             params: *mut Time,
             double_buffer_index: i32,
             direct_process: Bool,
@@ -371,13 +371,13 @@ pub type Refiid = *const Guid;
 
 #[repr(C)]
 pub struct IUnknownVtbl {
-    pub query_interface: unsafe extern "system" fn(
+    pub query_interface: unsafe extern "win64" fn(
         this: *mut IUnknown,
         riid: Refiid,
         ppv_object: *mut *mut c_void,
     ) -> i32,
-    pub add_ref: unsafe extern "system" fn(this: *mut IUnknown) -> u32,
-    pub release: unsafe extern "system" fn(this: *mut IUnknown) -> u32,
+    pub add_ref: unsafe extern "win64" fn(this: *mut IUnknown) -> u32,
+    pub release: unsafe extern "win64" fn(this: *mut IUnknown) -> u32,
 }
 
 #[repr(C)]
@@ -388,23 +388,23 @@ pub struct IUnknown {
 #[repr(C)]
 pub struct IAsioVtbl {
     pub base: IUnknownVtbl,
-    pub init: unsafe extern "system" fn(this: *mut IAsio, sys_handle: *mut c_void) -> Bool,
-    pub get_driver_name: unsafe extern "system" fn(this: *mut IAsio, name: *mut c_char),
-    pub get_driver_version: unsafe extern "system" fn(this: *mut IAsio) -> i32,
-    pub get_error_message: unsafe extern "system" fn(this: *mut IAsio, string: *mut c_char),
-    pub start: unsafe extern "system" fn(this: *mut IAsio) -> Error,
-    pub stop: unsafe extern "system" fn(this: *mut IAsio) -> Error,
-    pub get_channels: unsafe extern "system" fn(
+    pub init: unsafe extern "win64" fn(this: *mut IAsio, sys_handle: *mut c_void) -> Bool,
+    pub get_driver_name: unsafe extern "win64" fn(this: *mut IAsio, name: *mut c_char),
+    pub get_driver_version: unsafe extern "win64" fn(this: *mut IAsio) -> i32,
+    pub get_error_message: unsafe extern "win64" fn(this: *mut IAsio, string: *mut c_char),
+    pub start: unsafe extern "win64" fn(this: *mut IAsio) -> Error,
+    pub stop: unsafe extern "win64" fn(this: *mut IAsio) -> Error,
+    pub get_channels: unsafe extern "win64" fn(
         this: *mut IAsio,
         num_input_channels: *mut i32,
         num_output_channels: *mut i32,
     ) -> Error,
-    pub get_latencies: unsafe extern "system" fn(
+    pub get_latencies: unsafe extern "win64" fn(
         this: *mut IAsio,
         input_latency: *mut i32,
         output_latency: *mut i32,
     ) -> Error,
-    pub get_buffer_size: unsafe extern "system" fn(
+    pub get_buffer_size: unsafe extern "win64" fn(
         this: *mut IAsio,
         min_size: *mut i32,
         max_size: *mut i32,
@@ -412,36 +412,36 @@ pub struct IAsioVtbl {
         granularity: *mut i32,
     ) -> Error,
     pub can_sample_rate:
-        unsafe extern "system" fn(this: *mut IAsio, sample_rate: SampleRate) -> Error,
+        unsafe extern "win64" fn(this: *mut IAsio, sample_rate: SampleRate) -> Error,
     pub get_sample_rate:
-        unsafe extern "system" fn(this: *mut IAsio, sample_rate: *mut SampleRate) -> Error,
+        unsafe extern "win64" fn(this: *mut IAsio, sample_rate: *mut SampleRate) -> Error,
     pub set_sample_rate:
-        unsafe extern "system" fn(this: *mut IAsio, sample_rate: SampleRate) -> Error,
-    pub get_clock_sources: unsafe extern "system" fn(
+        unsafe extern "win64" fn(this: *mut IAsio, sample_rate: SampleRate) -> Error,
+    pub get_clock_sources: unsafe extern "win64" fn(
         this: *mut IAsio,
         clocks: *mut ClockSource,
         num_sources: *mut i32,
     ) -> Error,
-    pub set_clock_source: unsafe extern "system" fn(this: *mut IAsio, reference: i32) -> Error,
-    pub get_sample_position: unsafe extern "system" fn(
+    pub set_clock_source: unsafe extern "win64" fn(this: *mut IAsio, reference: i32) -> Error,
+    pub get_sample_position: unsafe extern "win64" fn(
         this: *mut IAsio,
         s_pos: *mut Samples,
         t_stamp: *mut TimeStamp,
     ) -> Error,
     pub get_channel_info:
-        unsafe extern "system" fn(this: *mut IAsio, info: *mut ChannelInfo) -> Error,
-    pub create_buffers: unsafe extern "system" fn(
+        unsafe extern "win64" fn(this: *mut IAsio, info: *mut ChannelInfo) -> Error,
+    pub create_buffers: unsafe extern "win64" fn(
         this: *mut IAsio,
         buffer_infos: *mut BufferInfo,
         num_channels: i32,
         buffer_size: i32,
         callbacks: *mut Callbacks,
     ) -> Error,
-    pub dispose_buffers: unsafe extern "system" fn(this: *mut IAsio) -> Error,
-    pub control_panel: unsafe extern "system" fn(this: *mut IAsio) -> Error,
+    pub dispose_buffers: unsafe extern "win64" fn(this: *mut IAsio) -> Error,
+    pub control_panel: unsafe extern "win64" fn(this: *mut IAsio) -> Error,
     pub future:
-        unsafe extern "system" fn(this: *mut IAsio, selector: i32, opt: *mut c_void) -> Error,
-    pub output_ready: unsafe extern "system" fn(this: *mut IAsio) -> Error,
+        unsafe extern "win64" fn(this: *mut IAsio, selector: i32, opt: *mut c_void) -> Error,
+    pub output_ready: unsafe extern "win64" fn(this: *mut IAsio) -> Error,
 }
 
 #[repr(C)]
@@ -450,41 +450,30 @@ pub struct IAsio {
 }
 
 pub trait Asio {
-    fn init(&mut self, sys_handle: *mut c_void) -> Bool;
-    fn get_driver_name(&mut self, name: *mut c_char);
+    fn init(&mut self, sys_handle: usize) -> Bool;
+    fn get_driver_name(&mut self) -> &str;
     fn get_driver_version(&mut self) -> i32;
-    fn get_error_message(&mut self, string: *mut c_char);
-    fn start(&mut self) -> AsioResult;
-    fn stop(&mut self) -> AsioResult;
-    fn get_channels(
-        &mut self,
-        num_input_channels: *mut i32,
-        num_output_channels: *mut i32,
-    ) -> AsioResult;
-    fn get_latencies(&mut self, input_latency: *mut i32, output_latency: *mut i32) -> AsioResult;
-    fn get_buffer_size(
-        &mut self,
-        min_size: *mut i32,
-        max_size: *mut i32,
-        preferred_size: *mut i32,
-        granularity: *mut i32,
-    ) -> AsioResult;
-    fn can_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult;
-    fn get_sample_rate(&mut self, sample_rate: *mut SampleRate) -> AsioResult;
-    fn set_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult;
-    fn get_clock_sources(&mut self, clocks: *mut ClockSource, num_sources: *mut i32) -> AsioResult;
-    fn set_clock_source(&mut self, reference: i32) -> AsioResult;
-    fn get_sample_position(&mut self, s_pos: *mut Samples, t_stamp: *mut TimeStamp) -> AsioResult;
-    fn get_channel_info(&mut self, info: *mut ChannelInfo) -> AsioResult;
+    fn get_error_message(&mut self) -> &str;
+    fn start(&mut self) -> AsioResult<()>;
+    fn stop(&mut self) -> AsioResult<()>;
+    fn get_channels(&mut self) -> AsioResult<(i32, i32)>;
+    fn get_latencies(&mut self) -> AsioResult<(i32, i32)>;
+    fn get_buffer_size(&mut self) -> AsioResult<(i32, i32, i32, i32)>;
+    fn can_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult<()>;
+    fn get_sample_rate(&mut self) -> AsioResult<SampleRate>;
+    fn set_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult<()>;
+    fn get_clock_sources(&mut self, clocks: &mut [ClockSource]) -> AsioResult<i32>;
+    fn set_clock_source(&mut self, reference: i32) -> AsioResult<()>;
+    fn get_sample_position(&mut self) -> AsioResult<(Samples, TimeStamp)>;
+    fn get_channel_info(&mut self, info: &mut ChannelInfo) -> AsioResult<()>;
     fn create_buffers(
         &mut self,
-        buffer_infos: *mut BufferInfo,
-        num_channels: i32,
+        buffer_infos: &mut [BufferInfo],
         buffer_size: i32,
-        callbacks: *mut Callbacks,
-    ) -> AsioResult;
-    fn dispose_buffers(&mut self) -> AsioResult;
-    fn control_panel(&mut self) -> AsioResult;
-    fn future(&mut self, selector: i32, opt: *mut c_void) -> AsioResult;
-    fn output_ready(&mut self) -> AsioResult;
+        callbacks: &mut Callbacks,
+    ) -> AsioResult<()>;
+    fn dispose_buffers(&mut self) -> AsioResult<()>;
+    fn control_panel(&mut self) -> AsioResult<()>;
+    fn future(&mut self, selector: i32, opt: usize) -> AsioResult<()>;
+    fn output_ready(&mut self) -> AsioResult<()>;
 }

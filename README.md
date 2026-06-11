@@ -19,9 +19,10 @@ Early stages. Currently a proof of concept.
 - [x] PoC: call Linux natively from a fake Windows DLL loaded by Wine
 - [x] ASIO type definitions (C ABI), IASIO/IUnknown vtables, `Asio`/`AsioClass` traits
 - [x] Generic COM scaffolding (refcounted object, class factory, DLL exports macro)
-- [ ] ASIO interface implementation (concrete driver)
-- [ ] DllRegisterServer / DllUnregisterServer (Wine registry)
+- [x] ASIO interface implementation (concrete driver)
+- [x] DllRegisterServer / DllUnregisterServer (Wine registry)
+- [x] Detected and opened by FL Studio at 44100Hz, Float32LSB
 - [ ] JACK backend
 - [ ] PipeWire backend
-- [ ] Buffer management and audio routing
-- [ ] Test with a real DAW / Audio Software (FL Studio, etc)
+- [ ] Fire buffer_switch from a Wine-aware thread
+- [ ] Actual audio output
