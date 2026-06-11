@@ -1,6 +1,23 @@
-use crate::asio::*;
+use crate::backends::AudioBackend;
+use crate::backends::pipewire::PipeWireAudioBackend;
+use libc;
 use crate::com::AsioClass;
+use crate::{DEVICE_LIST, asio::*};
 use core::ffi::c_char;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+
+unsafe extern "win64" {
+    fn CreateThread(
+        lp_thread_attributes: *const core::ffi::c_void,
+        dw_stack_size: usize,
+        lp_start_address: Option<unsafe extern "win64" fn(*mut core::ffi::c_void) -> u32>,
+        lp_parameter: *mut core::ffi::c_void,
+        dw_creation_flags: u32,
+        lp_thread_id: *mut u32,
+    ) -> *mut core::ffi::c_void;
+
+    fn Sleep(dw_milliseconds: u32);
+}
 
 pub struct RWAsioDriver {
     pub num_inputs: i32,
@@ -16,13 +33,95 @@ pub struct RWAsioDriver {
     buffers: Vec<Box<[u8]>>,
 }
 
+static PREFERRED_BUFFER_SIZE: AtomicI32 = AtomicI32::new(BUFFER_SIZE_PREFERRED);
+static ASIO_MESSAGE_FN: AtomicUsize = AtomicUsize::new(0);
+static RESET_PENDING: AtomicBool = AtomicBool::new(false);
+static RESET_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
+static BUFFER_SWITCH_FN: AtomicUsize = AtomicUsize::new(0);
+static RUNNING: AtomicBool = AtomicBool::new(false);
+static CURRENT_BUFFER_INDEX: AtomicI32 = AtomicI32::new(0);
+static SEM_PW_TO_WINE: AtomicUsize = AtomicUsize::new(0);
+static SEM_WINE_TO_PW: AtomicUsize = AtomicUsize::new(0);
+static ASIO_OUTPUT_PTRS: std::sync::Mutex<Vec<[usize; 2]>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_output_target(node_id: &str) {
+    let id: Option<u32> = if node_id.is_empty() { None } else { node_id.parse().ok() };
+    if let Ok(s) = crate::PW_STREAM_SENDER.read()
+        && let Some(sender) = s.as_ref() {
+            let _ = sender.send(crate::PwStreamCmd::SetTarget(id));
+            crate::rlog!("[driver] set_output_target id={:?}", id);
+        }
+}
+
+pub fn set_preferred_buffer_size(size: i32) {
+    PREFERRED_BUFFER_SIZE.store(size, Ordering::Relaxed);
+    RESET_PENDING.store(true, Ordering::Relaxed);
+    crate::rlog!("[driver] preferred buffer size -> {}, reset pending", size);
+}
+
+unsafe extern "win64" fn reset_worker(_: *mut core::ffi::c_void) -> u32 {
+    loop {
+        unsafe {
+            Sleep(50);
+        }
+        fire_reset_if_pending();
+    }
+}
+
+unsafe extern "win64" fn audio_worker(_: *mut core::ffi::c_void) -> u32 {
+    loop {
+        let s1 = SEM_PW_TO_WINE.load(Ordering::SeqCst) as *mut libc::sem_t;
+        if s1.is_null() {
+            break;
+        }
+        unsafe { libc::sem_wait(s1) };
+
+        if !RUNNING.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let idx = CURRENT_BUFFER_INDEX.load(Ordering::Relaxed);
+        let ptr = BUFFER_SWITCH_FN.load(Ordering::Relaxed);
+        if ptr != 0 {
+            let f: unsafe extern "win64" fn(i32, crate::asio::Bool) =
+                unsafe { core::mem::transmute(ptr) };
+            unsafe { f(idx, crate::asio::Bool::True) };
+        }
+
+        let s2 = SEM_WINE_TO_PW.load(Ordering::SeqCst) as *mut libc::sem_t;
+        if !s2.is_null() {
+            unsafe { libc::sem_post(s2) };
+        }
+    }
+    0
+}
+
+fn fire_reset_if_pending() {
+    if RESET_PENDING.swap(false, Ordering::Relaxed) {
+        let ptr = ASIO_MESSAGE_FN.load(Ordering::Relaxed);
+        if ptr != 0 {
+            let f: unsafe extern "win64" fn(i32, i32, *mut core::ffi::c_void, *mut f64) -> i32 =
+                unsafe { core::mem::transmute(ptr) };
+            unsafe {
+                f(
+                    MessageSelector::ResetRequest as i32,
+                    1,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                );
+            }
+            crate::rlog!("[driver] sent ResetRequest to host");
+        }
+    }
+}
+
 const DRIVER_VERSION: i32 = 1;
 const DEFAULT_INPUTS: i32 = 0;
 const DEFAULT_OUTPUTS: i32 = 2;
 const DEFAULT_SAMPLE_RATE: SampleRate = 44_100.0;
 const BUFFER_SIZE_MIN: i32 = 64;
 const BUFFER_SIZE_MAX: i32 = 2_048;
-const BUFFER_SIZE_PREFERRED: i32 = 512;
+const BUFFER_SIZE_PREFERRED: i32 = 256;
 const BUFFER_SIZE_GRANULARITY: i32 = -1;
 const SAMPLE_BYTES: usize = size_of::<f32>();
 
@@ -81,6 +180,37 @@ impl Asio for RWAsioDriver {
     fn init(&mut self, _sys_handle: usize) -> Bool {
         crate::rlog!("[driver] init");
         self.initialized = true;
+
+        if !RESET_WORKER_STARTED.swap(true, Ordering::Relaxed) {
+            unsafe {
+                CreateThread(
+                    core::ptr::null(),
+                    0,
+                    Some(reset_worker),
+                    core::ptr::null_mut(),
+                    0,
+                    core::ptr::null_mut(),
+                );
+            }
+            crate::rlog!("[driver] reset worker thread started");
+        }
+
+        if DEVICE_LIST.get().is_none() {
+            match PipeWireAudioBackend::new() {
+                Ok(v) => {
+                    let sinks = v.sinks().into_iter().map(|d| (d.name, d.id)).collect();
+                    let sources = v.sources().into_iter().map(|d| (d.name, d.id)).collect();
+                    DEVICE_LIST.get_or_init(|| (sinks, sources));
+                    crate::ACTIVE_BACKEND.get_or_init(|| std::sync::Mutex::new(Box::new(v)));
+                    crate::rlog!("[driver] device list populated");
+                }
+                Err(e) => {
+                    crate::rlog!("[driver] backend init failed: {}", e);
+                    DEVICE_LIST.get_or_init(|| (vec![], vec![]));
+                }
+            }
+        }
+
         Bool::True
     }
 
@@ -100,14 +230,120 @@ impl Asio for RWAsioDriver {
         if !self.initialized {
             return Err(AsioError::InvalidMode);
         }
+        if self.running {
+            return Ok(());
+        }
 
         crate::rlog!("[driver] start");
+
+        unsafe {
+            let s1 = Box::into_raw(Box::new(core::mem::zeroed::<libc::sem_t>()));
+            libc::sem_init(s1, 0, 0);
+            SEM_PW_TO_WINE.store(s1 as usize, Ordering::SeqCst);
+
+            let s2 = Box::into_raw(Box::new(core::mem::zeroed::<libc::sem_t>()));
+            libc::sem_init(s2, 0, 0);
+            SEM_WINE_TO_PW.store(s2 as usize, Ordering::SeqCst);
+        }
+
+        RUNNING.store(true, Ordering::SeqCst);
+
+        unsafe {
+            CreateThread(
+                core::ptr::null(),
+                0,
+                Some(audio_worker),
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+            );
+        }
+
+        let channels = self.num_outputs as usize;
+        let buffer_size = PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed) as usize;
+
+        let process = Box::new(move |output: &mut [f32]| {
+            let s1 = SEM_PW_TO_WINE.load(Ordering::SeqCst) as *mut libc::sem_t;
+            let s2 = SEM_WINE_TO_PW.load(Ordering::SeqCst) as *mut libc::sem_t;
+            if s1.is_null() || s2.is_null() {
+                return;
+            }
+
+            unsafe { libc::sem_post(s1) };
+            unsafe { libc::sem_wait(s2) };
+
+            if !RUNNING.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let idx = CURRENT_BUFFER_INDEX.load(Ordering::Relaxed) as usize;
+            let n_frames = (output.len() / channels.max(1)).min(buffer_size);
+
+            if let Ok(ptrs) = ASIO_OUTPUT_PTRS.lock() {
+                for frame in 0..n_frames {
+                    for ch in 0..channels {
+                        let sample = ptrs.get(ch).map_or(0.0, |&[p0, p1]| {
+                            let ptr = if idx == 0 { p0 } else { p1 } as *const f32;
+                            if ptr.is_null() {
+                                0.0
+                            } else {
+                                unsafe { *ptr.add(frame) }
+                            }
+                        });
+                        if let Some(s) = output.get_mut(frame * channels + ch) {
+                            *s = sample;
+                        }
+                    }
+                }
+            }
+
+            CURRENT_BUFFER_INDEX.fetch_xor(1, Ordering::Relaxed);
+        });
+
+        let sink_id = crate::SELECTED_SINK
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        let config = crate::backends::StreamConfig {
+            sample_rate: self.sample_rate,
+            buffer_size: PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed) as u32,
+            channels: self.num_outputs as u32,
+        };
+
+        if let Some(backend) = crate::ACTIVE_BACKEND.get() {
+            if let Ok(mut b) = backend.lock()
+                && let Err(e) = b.start_output(&sink_id, config, process) {
+                    crate::rlog!("[driver] start_output failed: {e}");
+                    return Err(AsioError::HwMalfunction);
+                }
+        } else {
+            crate::rlog!("[driver] no backend available");
+        }
+
         self.running = true;
+        crate::rlog!("[driver] started, sink={:?}", sink_id);
         Ok(())
     }
 
     fn stop(&mut self) -> AsioResult<()> {
         crate::rlog!("[driver] stop");
+        RUNNING.store(false, Ordering::SeqCst);
+
+        let s1 = SEM_PW_TO_WINE.load(Ordering::SeqCst) as *mut libc::sem_t;
+        if !s1.is_null() {
+            unsafe { libc::sem_post(s1) };
+        }
+        let s2 = SEM_WINE_TO_PW.load(Ordering::SeqCst) as *mut libc::sem_t;
+        if !s2.is_null() {
+            unsafe { libc::sem_post(s2) };
+        }
+
+        if let Some(backend) = crate::ACTIVE_BACKEND.get()
+            && let Ok(mut b) = backend.lock() {
+                let _ = b.stop_output();
+            }
+
         self.running = false;
         Ok(())
     }
@@ -117,14 +353,14 @@ impl Asio for RWAsioDriver {
     }
 
     fn get_latencies(&self) -> AsioResult<(i32, i32)> {
-        Ok((0, self.buffer_size_preferred))
+        Ok((0, PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed)))
     }
 
     fn get_buffer_size(&self) -> AsioResult<(i32, i32, i32, i32)> {
         Ok((
             self.buffer_size_min,
             self.buffer_size_max,
-            self.buffer_size_preferred,
+            PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed),
             self.buffer_size_granularity,
         ))
     }
@@ -174,6 +410,7 @@ impl Asio for RWAsioDriver {
     }
 
     fn get_sample_position(&self) -> AsioResult<(Samples, TimeStamp)> {
+        fire_reset_if_pending();
         Ok((samples_from_u64(self.sample_position), zero_timestamp()))
     }
 
@@ -207,8 +444,15 @@ impl Asio for RWAsioDriver {
         &mut self,
         buffer_infos: &mut [BufferInfo],
         buffer_size: i32,
-        _callbacks: &mut Callbacks,
+        callbacks: &mut Callbacks,
     ) -> AsioResult<()> {
+        if let Some(f) = callbacks.asio_message {
+            ASIO_MESSAGE_FN.store(f as usize, Ordering::Relaxed);
+        }
+        if let Some(f) = callbacks.buffer_switch {
+            BUFFER_SWITCH_FN.store(f as usize, Ordering::Relaxed);
+        }
+
         if !self.initialized {
             return Err(AsioError::InvalidMode);
         }
@@ -242,6 +486,15 @@ impl Asio for RWAsioDriver {
                 self.buffers.push(storage);
             }
             info.buffers = buffers;
+        }
+
+        if let Ok(mut ptrs) = ASIO_OUTPUT_PTRS.lock() {
+            ptrs.clear();
+            for info in buffer_infos.iter() {
+                if info.is_input == Bool::False {
+                    ptrs.push([info.buffers[0] as usize, info.buffers[1] as usize]);
+                }
+            }
         }
 
         crate::rlog!(
@@ -308,6 +561,7 @@ impl Asio for RWAsioDriver {
     }
 
     fn output_ready(&mut self) -> AsioResult<()> {
+        fire_reset_if_pending();
         Ok(())
     }
 }

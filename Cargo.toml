@@ -18,6 +18,8 @@ overflow-checks = false
 [dependencies]
 bitflags = "2.13.0"
 gtk4 = "0.11.3"
-libadwaita = { version = "0.9.1", features = ["gtk_v4_6", "v1_4"] }
+libadwaita = { version = "0.9.1", features = ["gtk_v4_6", "v1_4", "v1_5"] }
+libc = "0.2.186"
 libspa-sys = "0.10.0"
 pipewire = "0.10.0"
+thiserror = "2.0.18"
