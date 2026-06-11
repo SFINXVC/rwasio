@@ -1,10 +1,10 @@
 use libadwaita as adw;
 
-use adw::prelude::*;
 use adw::Application;
-use gtk4::{Label, LinkButton, Box as GtkBox, Orientation, Align};
-use std::sync::mpsc::{self, SyncSender};
+use adw::prelude::*;
+use gtk4::{Align, Box as GtkBox, Label, LinkButton, Orientation};
 use std::sync::OnceLock;
+use std::sync::mpsc::{self, SyncSender};
 
 #[derive(Debug)]
 pub enum GuiError {
@@ -84,7 +84,9 @@ fn build_window(app: &Application) -> adw::ApplicationWindow {
         .build();
 
     let description = Label::builder()
-        .label("A Fast ASIO driver for Wine that wires directly to JACK or PipeWire, written in Rust.")
+        .label(
+            "A Fast ASIO driver for Wine that wires directly to JACK or PipeWire, written in Rust.",
+        )
         .css_classes(["body"])
         .halign(Align::Center)
         .justify(gtk4::Justification::Center)
