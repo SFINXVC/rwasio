@@ -84,15 +84,15 @@ impl Asio for RWAsioDriver {
         Bool::True
     }
 
-    fn get_driver_name(&mut self) -> &str {
+    fn get_driver_name(&self) -> &str {
         Self::NAME
     }
 
-    fn get_driver_version(&mut self) -> i32 {
+    fn get_driver_version(&self) -> i32 {
         DRIVER_VERSION
     }
 
-    fn get_error_message(&mut self) -> &str {
+    fn get_error_message(&self) -> &str {
         ""
     }
 
@@ -112,15 +112,15 @@ impl Asio for RWAsioDriver {
         Ok(())
     }
 
-    fn get_channels(&mut self) -> AsioResult<(i32, i32)> {
+    fn get_channels(&self) -> AsioResult<(i32, i32)> {
         Ok((self.num_inputs, self.num_outputs))
     }
 
-    fn get_latencies(&mut self) -> AsioResult<(i32, i32)> {
+    fn get_latencies(&self) -> AsioResult<(i32, i32)> {
         Ok((0, self.buffer_size_preferred))
     }
 
-    fn get_buffer_size(&mut self) -> AsioResult<(i32, i32, i32, i32)> {
+    fn get_buffer_size(&self) -> AsioResult<(i32, i32, i32, i32)> {
         Ok((
             self.buffer_size_min,
             self.buffer_size_max,
@@ -129,7 +129,7 @@ impl Asio for RWAsioDriver {
         ))
     }
 
-    fn can_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult<()> {
+    fn can_sample_rate(&self, sample_rate: SampleRate) -> AsioResult<()> {
         if sample_rate == DEFAULT_SAMPLE_RATE {
             Ok(())
         } else {
@@ -137,7 +137,7 @@ impl Asio for RWAsioDriver {
         }
     }
 
-    fn get_sample_rate(&mut self) -> AsioResult<SampleRate> {
+    fn get_sample_rate(&self) -> AsioResult<SampleRate> {
         Ok(self.sample_rate)
     }
 
@@ -147,7 +147,7 @@ impl Asio for RWAsioDriver {
         Ok(())
     }
 
-    fn get_clock_sources(&mut self, clocks: &mut [ClockSource]) -> AsioResult<i32> {
+    fn get_clock_sources(&self, clocks: &mut [ClockSource]) -> AsioResult<i32> {
         let Some(clock) = clocks.get_mut(0) else {
             return Ok(1);
         };
@@ -173,11 +173,11 @@ impl Asio for RWAsioDriver {
         }
     }
 
-    fn get_sample_position(&mut self) -> AsioResult<(Samples, TimeStamp)> {
+    fn get_sample_position(&self) -> AsioResult<(Samples, TimeStamp)> {
         Ok((samples_from_u64(self.sample_position), zero_timestamp()))
     }
 
-    fn get_channel_info(&mut self, info: &mut ChannelInfo) -> AsioResult<()> {
+    fn get_channel_info(&self, info: &mut ChannelInfo) -> AsioResult<()> {
         let is_input = info.is_input == Bool::True;
         let channel = info.channel;
         let channel_count = if is_input {

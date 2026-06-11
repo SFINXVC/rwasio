@@ -141,7 +141,7 @@ impl<T: AsioClass> AsioObject<T> {
     }
 
     unsafe extern "win64" fn get_driver_name(this: *mut IAsio, name: *mut c_char) {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         if name.is_null() {
             return;
         }
@@ -152,12 +152,12 @@ impl<T: AsioClass> AsioObject<T> {
     }
 
     unsafe extern "win64" fn get_driver_version(this: *mut IAsio) -> i32 {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         obj.inner.get_driver_version()
     }
 
     unsafe extern "win64" fn get_error_message(this: *mut IAsio, string: *mut c_char) {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         if string.is_null() {
             return;
         }
@@ -188,7 +188,7 @@ impl<T: AsioClass> AsioObject<T> {
         num_in: *mut i32,
         num_out: *mut i32,
     ) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         match obj.inner.get_channels() {
             Ok((i, o)) => {
                 *num_in = i;
@@ -204,7 +204,7 @@ impl<T: AsioClass> AsioObject<T> {
         in_lat: *mut i32,
         out_lat: *mut i32,
     ) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         match obj.inner.get_latencies() {
             Ok((i, o)) => {
                 *in_lat = i;
@@ -222,7 +222,7 @@ impl<T: AsioClass> AsioObject<T> {
         pref: *mut i32,
         gran: *mut i32,
     ) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         match obj.inner.get_buffer_size() {
             Ok((mn, mx, pr, gr)) => {
                 *min = mn;
@@ -236,7 +236,7 @@ impl<T: AsioClass> AsioObject<T> {
     }
 
     unsafe extern "win64" fn can_sample_rate(this: *mut IAsio, rate: SampleRate) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         match obj.inner.can_sample_rate(rate) {
             Ok(()) => Error::Ok,
             Err(e) => Error::from(e),
@@ -244,7 +244,7 @@ impl<T: AsioClass> AsioObject<T> {
     }
 
     unsafe extern "win64" fn get_sample_rate(this: *mut IAsio, rate: *mut SampleRate) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         match obj.inner.get_sample_rate() {
             Ok(r) => {
                 *rate = r;
@@ -267,7 +267,7 @@ impl<T: AsioClass> AsioObject<T> {
         clocks: *mut ClockSource,
         num: *mut i32,
     ) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         if clocks.is_null() || num.is_null() {
             return Error::InvalidParameter;
         }
@@ -294,7 +294,7 @@ impl<T: AsioClass> AsioObject<T> {
         s_pos: *mut Samples,
         t_stamp: *mut TimeStamp,
     ) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         match obj.inner.get_sample_position() {
             Ok((sp, ts)) => {
                 *s_pos = sp;
@@ -306,7 +306,7 @@ impl<T: AsioClass> AsioObject<T> {
     }
 
     unsafe extern "win64" fn get_channel_info(this: *mut IAsio, info: *mut ChannelInfo) -> Error {
-        let obj = &mut *(this as *mut AsioObject<T>);
+        let obj = &*(this as *const AsioObject<T>);
         if info.is_null() {
             return Error::InvalidParameter;
         }

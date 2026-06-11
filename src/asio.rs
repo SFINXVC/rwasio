@@ -451,21 +451,21 @@ pub struct IAsio {
 
 pub trait Asio {
     fn init(&mut self, sys_handle: usize) -> Bool;
-    fn get_driver_name(&mut self) -> &str;
-    fn get_driver_version(&mut self) -> i32;
-    fn get_error_message(&mut self) -> &str;
+    fn get_driver_name(&self) -> &str;
+    fn get_driver_version(&self) -> i32;
+    fn get_error_message(&self) -> &str;
     fn start(&mut self) -> AsioResult<()>;
     fn stop(&mut self) -> AsioResult<()>;
-    fn get_channels(&mut self) -> AsioResult<(i32, i32)>;
-    fn get_latencies(&mut self) -> AsioResult<(i32, i32)>;
-    fn get_buffer_size(&mut self) -> AsioResult<(i32, i32, i32, i32)>;
-    fn can_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult<()>;
-    fn get_sample_rate(&mut self) -> AsioResult<SampleRate>;
+    fn get_channels(&self) -> AsioResult<(i32, i32)>;
+    fn get_latencies(&self) -> AsioResult<(i32, i32)>;
+    fn get_buffer_size(&self) -> AsioResult<(i32, i32, i32, i32)>;
+    fn can_sample_rate(&self, sample_rate: SampleRate) -> AsioResult<()>;
+    fn get_sample_rate(&self) -> AsioResult<SampleRate>;
     fn set_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult<()>;
-    fn get_clock_sources(&mut self, clocks: &mut [ClockSource]) -> AsioResult<i32>;
+    fn get_clock_sources(&self, clocks: &mut [ClockSource]) -> AsioResult<i32>;
     fn set_clock_source(&mut self, reference: i32) -> AsioResult<()>;
-    fn get_sample_position(&mut self) -> AsioResult<(Samples, TimeStamp)>;
-    fn get_channel_info(&mut self, info: &mut ChannelInfo) -> AsioResult<()>;
+    fn get_sample_position(&self) -> AsioResult<(Samples, TimeStamp)>;
+    fn get_channel_info(&self, info: &mut ChannelInfo) -> AsioResult<()>;
     fn create_buffers(
         &mut self,
         buffer_infos: &mut [BufferInfo],
