@@ -1,9 +1,9 @@
 use crate::backends::AudioBackend;
 use crate::backends::pipewire::PipeWireAudioBackend;
-use libc;
 use crate::com::AsioClass;
 use crate::{DEVICE_LIST, asio::*};
 use core::ffi::c_char;
+use libc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 unsafe extern "win64" {
@@ -45,12 +45,17 @@ static SEM_WINE_TO_PW: AtomicUsize = AtomicUsize::new(0);
 static ASIO_OUTPUT_PTRS: std::sync::Mutex<Vec<[usize; 2]>> = std::sync::Mutex::new(Vec::new());
 
 pub fn set_output_target(node_id: &str) {
-    let id: Option<u32> = if node_id.is_empty() { None } else { node_id.parse().ok() };
+    let id: Option<u32> = if node_id.is_empty() {
+        None
+    } else {
+        node_id.parse().ok()
+    };
     if let Ok(s) = crate::PW_STREAM_SENDER.read()
-        && let Some(sender) = s.as_ref() {
-            let _ = sender.send(crate::PwStreamCmd::SetTarget(id));
-            crate::rlog!("[driver] set_output_target id={:?}", id);
-        }
+        && let Some(sender) = s.as_ref()
+    {
+        let _ = sender.send(crate::PwStreamCmd::SetTarget(id));
+        crate::rlog!("[driver] set_output_target id={:?}", id);
+    }
 }
 
 pub fn set_preferred_buffer_size(size: i32) {
@@ -313,10 +318,11 @@ impl Asio for RWAsioDriver {
 
         if let Some(backend) = crate::ACTIVE_BACKEND.get() {
             if let Ok(mut b) = backend.lock()
-                && let Err(e) = b.start_output(&sink_id, config, process) {
-                    crate::rlog!("[driver] start_output failed: {e}");
-                    return Err(AsioError::HwMalfunction);
-                }
+                && let Err(e) = b.start_output(&sink_id, config, process)
+            {
+                crate::rlog!("[driver] start_output failed: {e}");
+                return Err(AsioError::HwMalfunction);
+            }
         } else {
             crate::rlog!("[driver] no backend available");
         }
@@ -340,9 +346,10 @@ impl Asio for RWAsioDriver {
         }
 
         if let Some(backend) = crate::ACTIVE_BACKEND.get()
-            && let Ok(mut b) = backend.lock() {
-                let _ = b.stop_output();
-            }
+            && let Ok(mut b) = backend.lock()
+        {
+            let _ = b.stop_output();
+        }
 
         self.running = false;
         Ok(())

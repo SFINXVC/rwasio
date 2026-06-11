@@ -16,7 +16,9 @@ pub type DeviceList = (Vec<(String, String)>, Vec<(String, String)>);
 pub static DEVICE_LIST: OnceLock<DeviceList> = OnceLock::new();
 pub static SELECTED_SINK: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
 pub static SELECTED_SOURCE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
-pub static ACTIVE_BACKEND: OnceLock<std::sync::Mutex<Box<dyn crate::backends::AudioBackend + Send>>> = OnceLock::new();
+pub static ACTIVE_BACKEND: OnceLock<
+    std::sync::Mutex<Box<dyn crate::backends::AudioBackend + Send>>,
+> = OnceLock::new();
 
 pub enum PwStreamCmd {
     Stop,

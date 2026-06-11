@@ -1,11 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use pipewire::{
-    context::ContextRc,
-    core::PW_ID_CORE,
-    main_loop::MainLoopRc,
-    types::ObjectType,
-};
+use pipewire::{context::ContextRc, core::PW_ID_CORE, main_loop::MainLoopRc, types::ObjectType};
 
 use crate::{
     ApplicationResult,
@@ -44,7 +39,9 @@ impl PipeWireAudioBackend {
                 }
 
                 let Some(props) = &object.props else { return };
-                let Some(class) = props.get("media.class") else { return };
+                let Some(class) = props.get("media.class") else {
+                    return;
+                };
 
                 let name = props
                     .get("node.description")
@@ -156,15 +153,24 @@ impl AudioBackend for PipeWireAudioBackend {
 
             let mainloop = match MainLoopRc::new(None) {
                 Ok(ml) => ml,
-                Err(e) => { crate::rlog!("[pw stream] mainloop: {e}"); return; }
+                Err(e) => {
+                    crate::rlog!("[pw stream] mainloop: {e}");
+                    return;
+                }
             };
             let context = match ContextRc::new(&mainloop, None) {
                 Ok(c) => c,
-                Err(e) => { crate::rlog!("[pw stream] context: {e}"); return; }
+                Err(e) => {
+                    crate::rlog!("[pw stream] context: {e}");
+                    return;
+                }
             };
             let core = match context.connect_rc(None) {
                 Ok(c) => c,
-                Err(e) => { crate::rlog!("[pw stream] core: {e}"); return; }
+                Err(e) => {
+                    crate::rlog!("[pw stream] core: {e}");
+                    return;
+                }
             };
 
             let props = pw::properties::properties! {
@@ -177,13 +183,18 @@ impl AudioBackend for PipeWireAudioBackend {
 
             let stream = match pw::stream::StreamRc::new(core, "rwasio-output", props) {
                 Ok(s) => s,
-                Err(e) => { crate::rlog!("[pw stream] stream: {e}"); return; }
+                Err(e) => {
+                    crate::rlog!("[pw stream] stream: {e}");
+                    return;
+                }
             };
 
             let _listener = stream
                 .add_local_listener::<()>()
                 .process(move |stream, _| {
-                    let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                    let Some(mut buffer) = stream.dequeue_buffer() else {
+                        return;
+                    };
                     let datas = buffer.datas_mut();
                     let Some(data) = datas.get_mut(0) else { return };
 
