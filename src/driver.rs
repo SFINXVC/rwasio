@@ -471,6 +471,7 @@ impl Asio for RWAsioDriver {
     fn set_sample_rate(&mut self, sample_rate: SampleRate) -> AsioResult<()> {
         self.can_sample_rate(sample_rate)?;
         self.sample_rate = sample_rate;
+        crate::DBG_SAMPLE_RATE.store(sample_rate as u32, Ordering::Relaxed);
         Ok(())
     }
 

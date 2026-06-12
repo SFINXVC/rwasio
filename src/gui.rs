@@ -151,6 +151,8 @@ struct DebugWidgets {
     in_status: gtk4::Label,
     buf_idx: adw::ActionRow,
     asio_buf: adw::ActionRow,
+    asio_rate: adw::ActionRow,
+    asio_latency: adw::ActionRow,
     asio_in_ch: adw::ActionRow,
     asio_out_ch: adw::ActionRow,
     cap_cbs: adw::ActionRow,
@@ -182,6 +184,16 @@ fn refresh_debug(w: &DebugWidgets) {
     let buf = crate::DBG_ASIO_BUFFER_SIZE.load(Ordering::Relaxed);
     w.asio_buf.set_subtitle(&if buf > 0 {
         format!("{} samples", buf)
+    } else {
+        "—".into()
+    });
+
+    let rate = crate::DBG_SAMPLE_RATE.load(Ordering::Relaxed);
+    w.asio_rate.set_subtitle(&format!("{} Hz", rate));
+
+    w.asio_latency.set_subtitle(&if buf > 0 && rate > 0 {
+        let ms = buf as f64 / rate as f64 * 1000.0;
+        format!("{:.2} ms", ms)
     } else {
         "—".into()
     });
@@ -241,13 +253,15 @@ fn build_debug_page() -> adw::NavigationPage {
     status_group.add(&buf_idx_row);
 
     let asio_buf_row = stat_row("Buffer Size", "—");
-    let asio_rate_row = stat_row("Sample Rate", "44100 Hz");
+    let asio_rate_row = stat_row("Sample Rate", "—");
+    let asio_latency_row = stat_row("Latency", "—");
     let asio_in_row = stat_row("Input Channels", "—");
     let asio_out_row = stat_row("Output Channels", "—");
 
     let asio_group = adw::PreferencesGroup::builder().title("ASIO").build();
     asio_group.add(&asio_buf_row);
     asio_group.add(&asio_rate_row);
+    asio_group.add(&asio_latency_row);
     asio_group.add(&asio_in_row);
     asio_group.add(&asio_out_row);
 
@@ -318,6 +332,8 @@ fn build_debug_page() -> adw::NavigationPage {
         in_status: in_status_lbl,
         buf_idx: buf_idx_row,
         asio_buf: asio_buf_row,
+        asio_rate: asio_rate_row,
+        asio_latency: asio_latency_row,
         asio_in_ch: asio_in_row,
         asio_out_ch: asio_out_row,
         cap_cbs: cap_cbs_row,
