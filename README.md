@@ -14,7 +14,7 @@ WineASIO is broken on recent Wine versions and hasn't seen meaningful updates in
 
 Early stages. Currently, DAW such as FL Studio can load it and detected everything correctly, i can also load the control panel too. Now just need to wire the pipewire/jack thing..
 
-<img width="677" height="564" alt="image" src="https://github.com/user-attachments/assets/4ec06129-cbde-4b11-a716-7f1759c71885" />
+<img width="813" height="942" alt="image" src="https://github.com/user-attachments/assets/b3c5b9ea-78ee-45f4-b02d-8153edea229a" />
 
 ## Todo
 
