@@ -460,12 +460,8 @@ impl Asio for RWAsioDriver {
         ))
     }
 
-    fn can_sample_rate(&self, sample_rate: SampleRate) -> AsioResult<()> {
-        if sample_rate == DEFAULT_SAMPLE_RATE {
-            Ok(())
-        } else {
-            Err(AsioError::NoClock)
-        }
+    fn can_sample_rate(&self, _sample_rate: SampleRate) -> AsioResult<()> {
+        Ok(())
     }
 
     fn get_sample_rate(&self) -> AsioResult<SampleRate> {
