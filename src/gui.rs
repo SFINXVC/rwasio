@@ -152,15 +152,10 @@ struct DebugWidgets {
     buf_idx: adw::ActionRow,
     asio_buf: adw::ActionRow,
     asio_rate: adw::ActionRow,
-    asio_out_latency: adw::ActionRow,
-    asio_in_latency: adw::ActionRow,
+    asio_latency: adw::ActionRow,
     asio_in_ch: adw::ActionRow,
     asio_out_ch: adw::ActionRow,
-    cap_cbs: adw::ActionRow,
-    cap_frames: adw::ActionRow,
     cap_staging: adw::ActionRow,
-    out_cbs: adw::ActionRow,
-    out_frames: adw::ActionRow,
 }
 
 fn refresh_debug(w: &DebugWidgets) {
@@ -192,16 +187,8 @@ fn refresh_debug(w: &DebugWidgets) {
     let rate = crate::DBG_SAMPLE_RATE.load(Ordering::Relaxed);
     w.asio_rate.set_subtitle(&format!("{} Hz", rate));
 
-    let out_us = crate::DBG_OUTPUT_LATENCY_US.load(Ordering::Relaxed);
-    w.asio_out_latency.set_subtitle(&if out_us > 0 {
-        format!("{:.2} ms", out_us as f64 / 1000.0)
-    } else {
-        "—".into()
-    });
-
-    let in_us = crate::DBG_INPUT_LATENCY_US.load(Ordering::Relaxed);
-    w.asio_in_latency.set_subtitle(&if in_us > 0 {
-        format!("{:.2} ms", in_us as f64 / 1000.0)
+    w.asio_latency.set_subtitle(&if buf > 0 && rate > 0 {
+        format!("{:.2} ms", buf as f64 / rate as f64 * 1000.0)
     } else {
         "—".into()
     });
@@ -220,29 +207,9 @@ fn refresh_debug(w: &DebugWidgets) {
         "—".into()
     });
 
-    let cap_cbs = crate::DBG_CAPTURE_CALLBACKS.load(Ordering::Relaxed);
-    w.cap_cbs.set_subtitle(&cap_cbs.to_string());
-
-    let cap_frames = crate::DBG_CAPTURE_FRAMES.load(Ordering::Relaxed);
-    w.cap_frames.set_subtitle(&if cap_cbs > 0 {
-        cap_frames.to_string()
-    } else {
-        "—".into()
-    });
-
     let staging = crate::DBG_STAGING_SAMPLES.load(Ordering::Relaxed);
     w.cap_staging.set_subtitle(&if staging > 0 {
         format!("{} samples", staging)
-    } else {
-        "—".into()
-    });
-
-    let out_cbs = crate::DBG_OUTPUT_CALLBACKS.load(Ordering::Relaxed);
-    w.out_cbs.set_subtitle(&out_cbs.to_string());
-
-    let out_frames = crate::DBG_OUTPUT_FRAMES.load(Ordering::Relaxed);
-    w.out_frames.set_subtitle(&if out_cbs > 0 {
-        out_frames.to_string()
     } else {
         "—".into()
     });
@@ -262,38 +229,23 @@ fn build_debug_page() -> adw::NavigationPage {
 
     let asio_buf_row = stat_row("Buffer Size", "—");
     let asio_rate_row = stat_row("Sample Rate", "—");
-    let asio_out_latency_row = stat_row("Output Latency", "—");
-    let asio_in_latency_row = stat_row("Input Latency", "—");
+    let asio_latency_row = stat_row("Latency", "—");
     let asio_in_row = stat_row("Input Channels", "—");
     let asio_out_row = stat_row("Output Channels", "—");
 
     let asio_group = adw::PreferencesGroup::builder().title("ASIO").build();
     asio_group.add(&asio_buf_row);
     asio_group.add(&asio_rate_row);
-    asio_group.add(&asio_out_latency_row);
-    asio_group.add(&asio_in_latency_row);
+    asio_group.add(&asio_latency_row);
     asio_group.add(&asio_in_row);
     asio_group.add(&asio_out_row);
 
-    let cap_cbs_row = stat_row("Callbacks", "0");
-    let cap_frames_row = stat_row("Frames (last)", "—");
     let cap_staging_row = stat_row("Ring Occupancy", "—");
 
     let capture_group = adw::PreferencesGroup::builder()
         .title("PipeWire Capture")
         .build();
-    capture_group.add(&cap_cbs_row);
-    capture_group.add(&cap_frames_row);
     capture_group.add(&cap_staging_row);
-
-    let out_cbs_row = stat_row("Callbacks", "0");
-    let out_frames_row = stat_row("Frames (last)", "—");
-
-    let output_group = adw::PreferencesGroup::builder()
-        .title("PipeWire Output")
-        .build();
-    output_group.add(&out_cbs_row);
-    output_group.add(&out_frames_row);
 
     let vbox = gtk4::Box::builder()
         .orientation(Orientation::Vertical)
@@ -306,7 +258,6 @@ fn build_debug_page() -> adw::NavigationPage {
     vbox.append(&status_group);
     vbox.append(&asio_group);
     vbox.append(&capture_group);
-    vbox.append(&output_group);
 
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -314,17 +265,7 @@ fn build_debug_page() -> adw::NavigationPage {
         .child(&vbox)
         .build();
 
-    let reset_btn = gtk4::Button::builder()
-        .icon_name("view-refresh-symbolic")
-        .tooltip_text("Reset counters")
-        .build();
-    reset_btn.connect_clicked(|_| {
-        crate::DBG_CAPTURE_CALLBACKS.store(0, Ordering::Relaxed);
-        crate::DBG_OUTPUT_CALLBACKS.store(0, Ordering::Relaxed);
-    });
-
     let header = adw::HeaderBar::new();
-    header.pack_end(&reset_btn);
 
     let toolbar = adw::ToolbarView::new();
     toolbar.set_top_bar_style(adw::ToolbarStyle::Raised);
@@ -343,15 +284,10 @@ fn build_debug_page() -> adw::NavigationPage {
         buf_idx: buf_idx_row,
         asio_buf: asio_buf_row,
         asio_rate: asio_rate_row,
-        asio_out_latency: asio_out_latency_row,
-        asio_in_latency: asio_in_latency_row,
+        asio_latency: asio_latency_row,
         asio_in_ch: asio_in_row,
         asio_out_ch: asio_out_row,
-        cap_cbs: cap_cbs_row,
-        cap_frames: cap_frames_row,
         cap_staging: cap_staging_row,
-        out_cbs: out_cbs_row,
-        out_frames: out_frames_row,
     });
 
     let source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));

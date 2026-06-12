@@ -1,5 +1,5 @@
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::AtomicU32;
 
 use thiserror::Error;
 
@@ -34,13 +34,7 @@ pub static DBG_SAMPLE_RATE: AtomicU32 = AtomicU32::new(44100);
 pub static DBG_NUM_INPUTS: AtomicU32 = AtomicU32::new(0);
 pub static DBG_NUM_OUTPUTS: AtomicU32 = AtomicU32::new(0);
 pub static DBG_CURRENT_BUFFER_IDX: AtomicU32 = AtomicU32::new(0);
-pub static DBG_CAPTURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
-pub static DBG_CAPTURE_FRAMES: AtomicU32 = AtomicU32::new(0);
 pub static DBG_STAGING_SAMPLES: AtomicU32 = AtomicU32::new(0);
-pub static DBG_OUTPUT_CALLBACKS: AtomicU64 = AtomicU64::new(0);
-pub static DBG_OUTPUT_FRAMES: AtomicU32 = AtomicU32::new(0);
-pub static DBG_OUTPUT_LATENCY_US: AtomicU32 = AtomicU32::new(0);
-pub static DBG_INPUT_LATENCY_US: AtomicU32 = AtomicU32::new(0);
 
 pub static PW_INPUT_STREAM_SENDER: std::sync::RwLock<
     Option<pipewire::channel::Sender<PwStreamCmd>>,

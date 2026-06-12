@@ -296,8 +296,6 @@ impl Asio for RWAsioDriver {
         let input_process = Box::new(move |captured: &[f32]| {
             let n_frames = captured.len() / channels_in.max(1);
             let n_samples = n_frames * channels_in;
-            crate::DBG_CAPTURE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-            crate::DBG_CAPTURE_FRAMES.store(n_frames as u32, Ordering::Relaxed);
 
             if let Ok(mut ring) = CAPTURE_RING.lock() {
                 let max = buffer_size * channels_in.max(1) * 8;
@@ -352,8 +350,6 @@ impl Asio for RWAsioDriver {
 
             let idx = CURRENT_BUFFER_INDEX.load(Ordering::Relaxed) as usize;
             let n_frames = (output.len() / channels.max(1)).min(buffer_size);
-            crate::DBG_OUTPUT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-            crate::DBG_OUTPUT_FRAMES.store(n_frames as u32, Ordering::Relaxed);
             crate::DBG_CURRENT_BUFFER_IDX.store(idx as u32, Ordering::Relaxed);
 
             if let Ok(ptrs) = ASIO_OUTPUT_PTRS.lock() {
