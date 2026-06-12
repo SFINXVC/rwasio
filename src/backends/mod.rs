@@ -28,4 +28,13 @@ pub trait AudioBackend: Send {
     ) -> ApplicationResult<()>;
 
     fn stop_output(&mut self) -> ApplicationResult<()>;
+
+    fn start_input(
+        &mut self,
+        device_id: &str,
+        config: StreamConfig,
+        process: Box<dyn Fn(&[f32]) + Send + 'static>,
+    ) -> ApplicationResult<()>;
+
+    fn stop_input(&mut self) -> ApplicationResult<()>;
 }

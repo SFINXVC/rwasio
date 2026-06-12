@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use thiserror::Error;
 
@@ -27,6 +28,20 @@ pub enum PwStreamCmd {
 
 pub static PW_STREAM_SENDER: std::sync::RwLock<Option<pipewire::channel::Sender<PwStreamCmd>>> =
     std::sync::RwLock::new(None);
+
+pub static DBG_ASIO_BUFFER_SIZE: AtomicU32 = AtomicU32::new(0);
+pub static DBG_NUM_INPUTS: AtomicU32 = AtomicU32::new(0);
+pub static DBG_NUM_OUTPUTS: AtomicU32 = AtomicU32::new(0);
+pub static DBG_CURRENT_BUFFER_IDX: AtomicU32 = AtomicU32::new(0);
+pub static DBG_CAPTURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+pub static DBG_CAPTURE_FRAMES: AtomicU32 = AtomicU32::new(0);
+pub static DBG_STAGING_SAMPLES: AtomicU32 = AtomicU32::new(0);
+pub static DBG_OUTPUT_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+pub static DBG_OUTPUT_FRAMES: AtomicU32 = AtomicU32::new(0);
+
+pub static PW_INPUT_STREAM_SENDER: std::sync::RwLock<
+    Option<pipewire::channel::Sender<PwStreamCmd>>,
+> = std::sync::RwLock::new(None);
 
 #[derive(Debug, Error)]
 pub enum ApplicationError {

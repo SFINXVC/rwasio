@@ -43,6 +43,9 @@ static CURRENT_BUFFER_INDEX: AtomicI32 = AtomicI32::new(0);
 static SEM_PW_TO_WINE: AtomicUsize = AtomicUsize::new(0);
 static SEM_WINE_TO_PW: AtomicUsize = AtomicUsize::new(0);
 static ASIO_OUTPUT_PTRS: std::sync::Mutex<Vec<[usize; 2]>> = std::sync::Mutex::new(Vec::new());
+static ASIO_INPUT_PTRS: std::sync::Mutex<Vec<[usize; 2]>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_RING: std::sync::Mutex<std::collections::VecDeque<f32>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
 
 pub fn set_output_target(node_id: &str) {
     let id: Option<u32> = if node_id.is_empty() {
@@ -55,6 +58,20 @@ pub fn set_output_target(node_id: &str) {
     {
         let _ = sender.send(crate::PwStreamCmd::SetTarget(id));
         crate::rlog!("[driver] set_output_target id={:?}", id);
+    }
+}
+
+pub fn set_input_target(node_id: &str) {
+    let id: Option<u32> = if node_id.is_empty() {
+        None
+    } else {
+        node_id.parse().ok()
+    };
+    if let Ok(s) = crate::PW_INPUT_STREAM_SENDER.read()
+        && let Some(sender) = s.as_ref()
+    {
+        let _ = sender.send(crate::PwStreamCmd::SetTarget(id));
+        crate::rlog!("[driver] set_input_target id={:?}", id);
     }
 }
 
@@ -121,7 +138,7 @@ fn fire_reset_if_pending() {
 }
 
 const DRIVER_VERSION: i32 = 1;
-const DEFAULT_INPUTS: i32 = 0;
+const DEFAULT_INPUTS: i32 = 2;
 const DEFAULT_OUTPUTS: i32 = 2;
 const DEFAULT_SAMPLE_RATE: SampleRate = 44_100.0;
 const BUFFER_SIZE_MIN: i32 = 64;
@@ -264,14 +281,63 @@ impl Asio for RWAsioDriver {
             );
         }
 
-        let channels = self.num_outputs as usize;
+        let channels_out = self.num_outputs as usize;
+        let channels_in = self.num_inputs as usize;
         let buffer_size = PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed) as usize;
 
+        if let Ok(mut ring) = CAPTURE_RING.lock() {
+            ring.clear();
+            ring.extend(std::iter::repeat_n(0.0f32, buffer_size * channels_in.max(1)));
+        }
+
+        let input_process = Box::new(move |captured: &[f32]| {
+            let n_frames = captured.len() / channels_in.max(1);
+            let n_samples = n_frames * channels_in;
+            crate::DBG_CAPTURE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+            crate::DBG_CAPTURE_FRAMES.store(n_frames as u32, Ordering::Relaxed);
+
+            if let Ok(mut ring) = CAPTURE_RING.lock() {
+                let max = buffer_size * channels_in.max(1) * 8;
+                if ring.len() + n_samples > max {
+                    let excess = ring.len() + n_samples - max;
+                    ring.drain(..excess);
+                }
+                ring.extend(captured[..n_samples].iter().copied());
+                crate::DBG_STAGING_SAMPLES.store(ring.len() as u32, Ordering::Relaxed);
+            }
+        });
+
+        // Snapshot raw input buffer pointers. create_buffers always runs before start(),
+        // and dispose_buffers only runs after stop() which joins the PW thread first,
+        // so these pointers are valid for the entire lifetime of the process closure.
+        let input_ptrs: Vec<[usize; 2]> = ASIO_INPUT_PTRS
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        let channels = channels_out;
         let process = Box::new(move |output: &mut [f32]| {
             let s1 = SEM_PW_TO_WINE.load(Ordering::SeqCst) as *mut libc::sem_t;
             let s2 = SEM_WINE_TO_PW.load(Ordering::SeqCst) as *mut libc::sem_t;
             if s1.is_null() || s2.is_null() {
                 return;
+            }
+
+            if !input_ptrs.is_empty() {
+                let write_idx = CURRENT_BUFFER_INDEX.load(Ordering::Relaxed) as usize ^ 1;
+                if let Ok(mut ring) = CAPTURE_RING.lock() {
+                    for frame in 0..buffer_size {
+                        for ch in 0..channels_in {
+                            let sample = ring.pop_front().unwrap_or(0.0);
+                            if let Some(&[p0, p1]) = input_ptrs.get(ch) {
+                                let ptr = if write_idx == 0 { p0 } else { p1 } as *mut f32;
+                                if !ptr.is_null() {
+                                    unsafe { *ptr.add(frame) = sample };
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             unsafe { libc::sem_post(s1) };
@@ -283,6 +349,9 @@ impl Asio for RWAsioDriver {
 
             let idx = CURRENT_BUFFER_INDEX.load(Ordering::Relaxed) as usize;
             let n_frames = (output.len() / channels.max(1)).min(buffer_size);
+            crate::DBG_OUTPUT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+            crate::DBG_OUTPUT_FRAMES.store(n_frames as u32, Ordering::Relaxed);
+            crate::DBG_CURRENT_BUFFER_IDX.store(idx as u32, Ordering::Relaxed);
 
             if let Ok(ptrs) = ASIO_OUTPUT_PTRS.lock() {
                 for frame in 0..n_frames {
@@ -310,18 +379,32 @@ impl Asio for RWAsioDriver {
             .map(|g| g.clone())
             .unwrap_or_default();
 
-        let config = crate::backends::StreamConfig {
+        let source_id = crate::SELECTED_SOURCE
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        let output_config = crate::backends::StreamConfig {
             sample_rate: self.sample_rate,
             buffer_size: PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed) as u32,
             channels: self.num_outputs as u32,
         };
 
+        let input_config = crate::backends::StreamConfig {
+            sample_rate: self.sample_rate,
+            buffer_size: PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed) as u32,
+            channels: self.num_inputs as u32,
+        };
+
         if let Some(backend) = crate::ACTIVE_BACKEND.get() {
-            if let Ok(mut b) = backend.lock()
-                && let Err(e) = b.start_output(&sink_id, config, process)
-            {
-                crate::rlog!("[driver] start_output failed: {e}");
-                return Err(AsioError::HwMalfunction);
+            if let Ok(mut b) = backend.lock() {
+                if let Err(e) = b.start_output(&sink_id, output_config, process) {
+                    crate::rlog!("[driver] start_output failed: {e}");
+                    return Err(AsioError::HwMalfunction);
+                }
+                if let Err(e) = b.start_input(&source_id, input_config, input_process) {
+                    crate::rlog!("[driver] start_input failed: {e}");
+                }
             }
         } else {
             crate::rlog!("[driver] no backend available");
@@ -349,6 +432,7 @@ impl Asio for RWAsioDriver {
             && let Ok(mut b) = backend.lock()
         {
             let _ = b.stop_output();
+            let _ = b.stop_input();
         }
 
         self.running = false;
@@ -360,7 +444,8 @@ impl Asio for RWAsioDriver {
     }
 
     fn get_latencies(&self) -> AsioResult<(i32, i32)> {
-        Ok((0, PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed)))
+        let buf = PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed);
+        Ok((buf, buf))
     }
 
     fn get_buffer_size(&self) -> AsioResult<(i32, i32, i32, i32)> {
@@ -469,6 +554,9 @@ impl Asio for RWAsioDriver {
         }
 
         self.buffers.clear();
+        crate::DBG_ASIO_BUFFER_SIZE.store(buffer_size as u32, Ordering::Relaxed);
+        crate::DBG_NUM_INPUTS.store(self.num_inputs as u32, Ordering::Relaxed);
+        crate::DBG_NUM_OUTPUTS.store(self.num_outputs as u32, Ordering::Relaxed);
         let channel_count = buffer_infos.len();
         let buffer_bytes = buffer_size as usize * SAMPLE_BYTES;
 
@@ -499,6 +587,15 @@ impl Asio for RWAsioDriver {
             ptrs.clear();
             for info in buffer_infos.iter() {
                 if info.is_input == Bool::False {
+                    ptrs.push([info.buffers[0] as usize, info.buffers[1] as usize]);
+                }
+            }
+        }
+
+        if let Ok(mut ptrs) = ASIO_INPUT_PTRS.lock() {
+            ptrs.clear();
+            for info in buffer_infos.iter() {
+                if info.is_input == Bool::True {
                     ptrs.push([info.buffers[0] as usize, info.buffers[1] as usize]);
                 }
             }

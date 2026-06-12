@@ -12,6 +12,8 @@ pub struct PipeWireAudioBackend {
     sources: Vec<AudioDevice>,
     cmd_sender: Option<pipewire::channel::Sender<crate::PwStreamCmd>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    input_cmd_sender: Option<pipewire::channel::Sender<crate::PwStreamCmd>>,
+    input_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PipeWireAudioBackend {
@@ -81,6 +83,8 @@ impl PipeWireAudioBackend {
             sources,
             cmd_sender: None,
             thread: None,
+            input_cmd_sender: None,
+            input_thread: None,
         })
     }
 }
@@ -278,6 +282,164 @@ impl AudioBackend for PipeWireAudioBackend {
             *s = None;
         }
         if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        Ok(())
+    }
+
+    fn start_input(
+        &mut self,
+        device_id: &str,
+        config: StreamConfig,
+        process: Box<dyn Fn(&[f32]) + Send + 'static>,
+    ) -> ApplicationResult<()> {
+        let (cmd_sender, cmd_receiver) = pipewire::channel::channel::<crate::PwStreamCmd>();
+
+        let node_id: Option<u32> = if device_id.is_empty() {
+            None
+        } else {
+            device_id.parse().ok()
+        };
+
+        let channels = config.channels;
+        let sample_rate = config.sample_rate as u32;
+        let buffer_size = config.buffer_size;
+
+        if let Ok(mut s) = crate::PW_INPUT_STREAM_SENDER.write() {
+            *s = Some(cmd_sender.clone());
+        }
+
+        let thread = std::thread::spawn(move || {
+            use pipewire as pw;
+            use pw::spa;
+
+            pw::init();
+
+            let mainloop = match MainLoopRc::new(None) {
+                Ok(ml) => ml,
+                Err(e) => {
+                    crate::rlog!("[pw capture] mainloop: {e}");
+                    return;
+                }
+            };
+            let context = match ContextRc::new(&mainloop, None) {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::rlog!("[pw capture] context: {e}");
+                    return;
+                }
+            };
+            let core = match context.connect_rc(None) {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::rlog!("[pw capture] core: {e}");
+                    return;
+                }
+            };
+
+            let props = pw::properties::properties! {
+                *pw::keys::MEDIA_TYPE => "Audio",
+                *pw::keys::MEDIA_ROLE => "Music",
+                *pw::keys::MEDIA_CATEGORY => "Capture",
+                *pw::keys::AUDIO_CHANNELS => channels.to_string(),
+                *pw::keys::NODE_LATENCY => format!("{}/{}", buffer_size, sample_rate),
+            };
+
+            let stream = match pw::stream::StreamRc::new(core, "rwasio-input", props) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::rlog!("[pw capture] stream: {e}");
+                    return;
+                }
+            };
+
+            let _listener = stream
+                .add_local_listener::<()>()
+                .process(move |stream, _| {
+                    let Some(mut buffer) = stream.dequeue_buffer() else {
+                        return;
+                    };
+                    let datas = buffer.datas_mut();
+                    let Some(data) = datas.get_mut(0) else { return };
+
+                    let chunk_offset = data.chunk().offset() as usize;
+                    let chunk_size = data.chunk().size() as usize;
+                    let n_samples = chunk_size / std::mem::size_of::<f32>();
+
+                    if let Some(slice) = data.data() {
+                        if slice.len() < chunk_offset + chunk_size {
+                            return;
+                        }
+                        let n_frames = (n_samples / channels as usize).min(buffer_size as usize);
+                        let samples = unsafe {
+                            std::slice::from_raw_parts(
+                                slice[chunk_offset..].as_ptr() as *const f32,
+                                n_frames * channels as usize,
+                            )
+                        };
+                        process(samples);
+                    }
+                })
+                .register()
+                .unwrap();
+
+            let values = make_audio_param_bytes(sample_rate, channels);
+            let mut params = [pw::spa::pod::Pod::from_bytes(&values).unwrap()];
+
+            if let Err(e) = stream.connect(
+                spa::utils::Direction::Input,
+                node_id,
+                pw::stream::StreamFlags::AUTOCONNECT
+                    | pw::stream::StreamFlags::MAP_BUFFERS
+                    | pw::stream::StreamFlags::RT_PROCESS,
+                &mut params,
+            ) {
+                crate::rlog!("[pw capture] connect: {e}");
+                return;
+            }
+
+            let stream_for_cmd = stream.clone();
+            let _cmd_attached = cmd_receiver.attach(mainloop.loop_(), {
+                let ml = mainloop.clone();
+                move |cmd| match cmd {
+                    crate::PwStreamCmd::Stop => ml.quit(),
+                    crate::PwStreamCmd::SetTarget(new_node_id) => {
+                        crate::rlog!("[pw capture] retargeting to {:?}", new_node_id);
+                        let _ = stream_for_cmd.disconnect();
+                        let values = make_audio_param_bytes(sample_rate, channels);
+                        let mut params = [pw::spa::pod::Pod::from_bytes(&values).unwrap()];
+                        if let Err(e) = stream_for_cmd.connect(
+                            spa::utils::Direction::Input,
+                            new_node_id,
+                            pw::stream::StreamFlags::AUTOCONNECT
+                                | pw::stream::StreamFlags::MAP_BUFFERS
+                                | pw::stream::StreamFlags::RT_PROCESS,
+                            &mut params,
+                        ) {
+                            crate::rlog!("[pw capture] retarget connect: {e}");
+                        }
+                    }
+                }
+            });
+
+            crate::rlog!("[pw capture] running, node_id={:?}", node_id);
+            mainloop.run();
+            crate::rlog!("[pw capture] stopped");
+        });
+
+        self.input_cmd_sender = Some(cmd_sender);
+        self.input_thread = Some(thread);
+        Ok(())
+    }
+
+    fn stop_input(&mut self) -> ApplicationResult<()> {
+        if let Some(sender) = self.input_cmd_sender.take() {
+            let _ = sender.send(crate::PwStreamCmd::Stop);
+        }
+        if let Ok(mut s) = crate::PW_INPUT_STREAM_SENDER.write() {
+            *s = None;
+        }
+        if let Some(thread) = self.input_thread.take() {
             let _ = thread.join();
         }
         Ok(())
