@@ -39,6 +39,8 @@ pub static DBG_CAPTURE_FRAMES: AtomicU32 = AtomicU32::new(0);
 pub static DBG_STAGING_SAMPLES: AtomicU32 = AtomicU32::new(0);
 pub static DBG_OUTPUT_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 pub static DBG_OUTPUT_FRAMES: AtomicU32 = AtomicU32::new(0);
+pub static DBG_OUTPUT_LATENCY_US: AtomicU32 = AtomicU32::new(0);
+pub static DBG_INPUT_LATENCY_US: AtomicU32 = AtomicU32::new(0);
 
 pub static PW_INPUT_STREAM_SENDER: std::sync::RwLock<
     Option<pipewire::channel::Sender<PwStreamCmd>>,

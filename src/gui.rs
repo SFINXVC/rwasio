@@ -152,7 +152,8 @@ struct DebugWidgets {
     buf_idx: adw::ActionRow,
     asio_buf: adw::ActionRow,
     asio_rate: adw::ActionRow,
-    asio_latency: adw::ActionRow,
+    asio_out_latency: adw::ActionRow,
+    asio_in_latency: adw::ActionRow,
     asio_in_ch: adw::ActionRow,
     asio_out_ch: adw::ActionRow,
     cap_cbs: adw::ActionRow,
@@ -191,9 +192,16 @@ fn refresh_debug(w: &DebugWidgets) {
     let rate = crate::DBG_SAMPLE_RATE.load(Ordering::Relaxed);
     w.asio_rate.set_subtitle(&format!("{} Hz", rate));
 
-    w.asio_latency.set_subtitle(&if buf > 0 && rate > 0 {
-        let ms = buf as f64 / rate as f64 * 1000.0;
-        format!("{:.2} ms", ms)
+    let out_us = crate::DBG_OUTPUT_LATENCY_US.load(Ordering::Relaxed);
+    w.asio_out_latency.set_subtitle(&if out_us > 0 {
+        format!("{:.2} ms", out_us as f64 / 1000.0)
+    } else {
+        "—".into()
+    });
+
+    let in_us = crate::DBG_INPUT_LATENCY_US.load(Ordering::Relaxed);
+    w.asio_in_latency.set_subtitle(&if in_us > 0 {
+        format!("{:.2} ms", in_us as f64 / 1000.0)
     } else {
         "—".into()
     });
@@ -254,14 +262,16 @@ fn build_debug_page() -> adw::NavigationPage {
 
     let asio_buf_row = stat_row("Buffer Size", "—");
     let asio_rate_row = stat_row("Sample Rate", "—");
-    let asio_latency_row = stat_row("Latency", "—");
+    let asio_out_latency_row = stat_row("Output Latency", "—");
+    let asio_in_latency_row = stat_row("Input Latency", "—");
     let asio_in_row = stat_row("Input Channels", "—");
     let asio_out_row = stat_row("Output Channels", "—");
 
     let asio_group = adw::PreferencesGroup::builder().title("ASIO").build();
     asio_group.add(&asio_buf_row);
     asio_group.add(&asio_rate_row);
-    asio_group.add(&asio_latency_row);
+    asio_group.add(&asio_out_latency_row);
+    asio_group.add(&asio_in_latency_row);
     asio_group.add(&asio_in_row);
     asio_group.add(&asio_out_row);
 
@@ -333,7 +343,8 @@ fn build_debug_page() -> adw::NavigationPage {
         buf_idx: buf_idx_row,
         asio_buf: asio_buf_row,
         asio_rate: asio_rate_row,
-        asio_latency: asio_latency_row,
+        asio_out_latency: asio_out_latency_row,
+        asio_in_latency: asio_in_latency_row,
         asio_in_ch: asio_in_row,
         asio_out_ch: asio_out_row,
         cap_cbs: cap_cbs_row,

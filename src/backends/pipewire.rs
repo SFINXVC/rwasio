@@ -193,9 +193,21 @@ impl AudioBackend for PipeWireAudioBackend {
                 }
             };
 
+            let out_last_cb: std::cell::Cell<Option<std::time::Instant>> =
+                std::cell::Cell::new(None);
+
             let _listener = stream
                 .add_local_listener::<()>()
                 .process(move |stream, _| {
+                    let now = std::time::Instant::now();
+                    if let Some(last) = out_last_cb.get() {
+                        crate::DBG_OUTPUT_LATENCY_US.store(
+                            now.duration_since(last).as_micros() as u32,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    out_last_cb.set(Some(now));
+
                     let Some(mut buffer) = stream.dequeue_buffer() else {
                         return;
                     };
@@ -353,9 +365,21 @@ impl AudioBackend for PipeWireAudioBackend {
                 }
             };
 
+            let in_last_cb: std::cell::Cell<Option<std::time::Instant>> =
+                std::cell::Cell::new(None);
+
             let _listener = stream
                 .add_local_listener::<()>()
                 .process(move |stream, _| {
+                    let now = std::time::Instant::now();
+                    if let Some(last) = in_last_cb.get() {
+                        crate::DBG_INPUT_LATENCY_US.store(
+                            now.duration_since(last).as_micros() as u32,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    in_last_cb.set(Some(now));
+
                     let Some(mut buffer) = stream.dequeue_buffer() else {
                         return;
                     };
