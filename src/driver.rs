@@ -287,7 +287,10 @@ impl Asio for RWAsioDriver {
 
         if let Ok(mut ring) = CAPTURE_RING.lock() {
             ring.clear();
-            ring.extend(std::iter::repeat_n(0.0f32, buffer_size * channels_in.max(1)));
+            ring.extend(std::iter::repeat_n(
+                0.0f32,
+                buffer_size * channels_in.max(1),
+            ));
         }
 
         let input_process = Box::new(move |captured: &[f32]| {
