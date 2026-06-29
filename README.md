@@ -14,7 +14,7 @@ WineASIO is broken on recent Wine versions and hasn't seen meaningful updates in
 
 Functional. FL Studio loads the driver, enumerates devices, plays and records audio through PipeWire. A GTK4/libadwaita control panel lets you pick input/output devices and buffer size at runtime, with a live diagnostics page.
 
-<img width="813" height="942" alt="image" src="https://github.com/user-attachments/assets/b3c5b9ea-78ee-45f4-b02d-8153edea229a" />
+<img width="795" height="909" alt="image" src="https://github.com/user-attachments/assets/a498275c-87d7-4731-8a45-082f1bd9de5e" />
 
 ## Requirements
 
