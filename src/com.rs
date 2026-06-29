@@ -404,20 +404,20 @@ impl<T: AsioClass> ClassFactory<T> {
         ppv: *mut *mut c_void,
     ) -> HResult {
         let iid = *riid;
-        crate::rlog!(
-            "[com] ClassFactory::query_interface iid={:08x}-{:04x}-{:04x}",
+        tracing::trace!(
+            "ClassFactory::query_interface iid={:08x}-{:04x}-{:04x}",
             iid.data1,
             iid.data2,
             iid.data3
         );
 
         if iid == IID_IUNKNOWN || iid == IID_ICLASSFACTORY {
-            crate::rlog!("[com] ClassFactory::query_interface matched -> S_OK");
+            tracing::trace!("ClassFactory::query_interface matched -> S_OK");
             *ppv = this as *mut c_void;
             Self::add_ref(this);
             S_OK
         } else {
-            crate::rlog!("[com] ClassFactory::query_interface no match -> E_NOINTERFACE");
+            tracing::trace!("ClassFactory::query_interface no match -> E_NOINTERFACE");
             *ppv = ptr::null_mut();
             E_NOINTERFACE
         }
@@ -447,23 +447,23 @@ impl<T: AsioClass> ClassFactory<T> {
         ppv: *mut *mut c_void,
     ) -> HResult {
         let iid = *riid;
-        crate::rlog!(
-            "[com] create_instance riid={:08x}-{:04x}-{:04x}",
+        tracing::trace!(
+            "create_instance riid={:08x}-{:04x}-{:04x}",
             iid.data1,
             iid.data2,
             iid.data3
         );
 
-        crate::rlog!("[com] ClassFactory::create_instance called");
+        tracing::trace!("ClassFactory::create_instance called");
         if ppv.is_null() {
-            crate::rlog!("[com] create_instance: ppv null -> E_POINTER");
+            tracing::trace!("create_instance: ppv null -> E_POINTER");
             return E_POINTER;
         }
 
         *ppv = ptr::null_mut();
 
         if !outer.is_null() {
-            crate::rlog!("[com] create_instance: outer non-null -> CLASS_E_NOAGGREGATION");
+            tracing::trace!("create_instance: outer non-null -> CLASS_E_NOAGGREGATION");
             return CLASS_E_NOAGGREGATION;
         }
 
@@ -471,7 +471,7 @@ impl<T: AsioClass> ClassFactory<T> {
         let unknown = object as *mut IUnknown;
         let vtbl = (*unknown).lp_vtbl;
         let hr = ((*vtbl).query_interface)(unknown, riid, ppv);
-        crate::rlog!("[com] create_instance: query_interface hr={hr:#010x}");
+        tracing::trace!("create_instance: query_interface hr={hr:#010x}");
         ((*vtbl).release)(unknown);
 
         hr
@@ -500,41 +500,38 @@ pub unsafe fn dll_get_class_object<T: AsioClass>(
     riid: Refiid,
     ppv: *mut *mut c_void,
 ) -> HResult {
-    crate::rlog!(
-        "[com] DllGetClassObject called ppv={:?} rclsid={:?}",
-        ppv,
-        rclsid
-    );
+    crate::init_logging();
+    tracing::trace!("DllGetClassObject called ppv={:?} rclsid={:?}", ppv, rclsid);
 
-    crate::rlog!("[com] checking ppv null");
+    tracing::trace!("checking ppv null");
     if ppv.is_null() {
-        crate::rlog!("[com] ppv null -> E_POINTER");
+        tracing::trace!("ppv null -> E_POINTER");
         return E_POINTER;
     }
 
-    crate::rlog!("[com] zeroing ppv");
+    tracing::trace!("zeroing ppv");
     *ppv = ptr::null_mut();
 
-    crate::rlog!("[com] reading rclsid");
+    tracing::trace!("reading rclsid");
     let clsid = *rclsid;
-    crate::rlog!(
-        "[com] rclsid={:08x}-{:04x}-{:04x}",
+    tracing::trace!(
+        "rclsid={:08x}-{:04x}-{:04x}",
         clsid.data1,
         clsid.data2,
         clsid.data3
     );
 
     if clsid != T::CLSID {
-        crate::rlog!("[com] clsid mismatch -> CLASS_E_CLASSNOTAVAILABLE");
+        tracing::trace!("clsid mismatch -> CLASS_E_CLASSNOTAVAILABLE");
         return CLASS_E_CLASSNOTAVAILABLE;
     }
 
-    crate::rlog!("[com] clsid matched, creating factory");
+    tracing::trace!("clsid matched, creating factory");
     let factory = ClassFactory::<T>::new_raw();
     let unknown = factory as *mut IUnknown;
     let vtbl = (*unknown).lp_vtbl;
     let hr = ((*vtbl).query_interface)(unknown, riid, ppv);
-    crate::rlog!("[com] DllGetClassObject: query_interface hr={hr:#010x}");
+    tracing::trace!("DllGetClassObject: query_interface hr={hr:#010x}");
     ((*vtbl).release)(unknown);
 
     hr
@@ -766,6 +763,7 @@ unsafe fn reg_set_sz(hkey: usize, valname: *const u8, value: &[u8]) {
 /// Called by COM runtime / regsvr32. Writes ASIO driver entries to the Windows registry.
 /// Must run inside a Wine process where Win32 APIs are available.
 pub unsafe fn dll_register_server<T: AsioClass>() -> HResult {
+    crate::init_logging();
     let dll_path = T::DLL_FILE.as_bytes();
     let clsid = guid_to_str(&T::CLSID);
 
@@ -857,6 +855,7 @@ pub unsafe fn dll_register_server<T: AsioClass>() -> HResult {
 ///
 /// Called by regsvr32 /u. Removes ASIO driver registry entries written by `DllRegisterServer`.
 pub unsafe fn dll_unregister_server<T: AsioClass>() -> HResult {
+    crate::init_logging();
     let clsid = guid_to_str(&T::CLSID);
 
     let mut clsid_path = [0u8; 64];

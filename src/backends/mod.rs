@@ -8,11 +8,16 @@ pub struct AudioDevice {
     pub id: String,
 }
 
-pub struct StreamConfig {
+pub struct DuplexConfig {
     pub sample_rate: f64,
     pub buffer_size: u32,
-    pub channels: u32,
+    pub input_channels: u32,
+    pub output_channels: u32,
+    pub output_target: Option<u32>,
+    pub input_target: Option<u32>,
 }
+
+pub type ProcessCallback = Box<dyn FnMut(&[&[f32]], &mut [&mut [f32]]) + Send + 'static>;
 
 pub trait AudioBackend: Send {
     fn name(&self) -> &'static str;
@@ -20,21 +25,9 @@ pub trait AudioBackend: Send {
     fn sinks(&self) -> Vec<AudioDevice>;
     fn sources(&self) -> Vec<AudioDevice>;
 
-    fn start_output(
-        &mut self,
-        device_id: &str,
-        config: StreamConfig,
-        process: Box<dyn Fn(&mut [f32]) + Send + 'static>,
-    ) -> ApplicationResult<()>;
+    fn start(&mut self, config: DuplexConfig, process: ProcessCallback) -> ApplicationResult<()>;
+    fn stop(&mut self) -> ApplicationResult<()>;
 
-    fn stop_output(&mut self) -> ApplicationResult<()>;
-
-    fn start_input(
-        &mut self,
-        device_id: &str,
-        config: StreamConfig,
-        process: Box<dyn Fn(&[f32]) + Send + 'static>,
-    ) -> ApplicationResult<()>;
-
-    fn stop_input(&mut self) -> ApplicationResult<()>;
+    fn set_output_target(&mut self, id: Option<u32>) -> ApplicationResult<()>;
+    fn set_input_target(&mut self, id: Option<u32>) -> ApplicationResult<()>;
 }

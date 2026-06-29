@@ -10,8 +10,6 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, SyncSender};
 use std::time::Duration;
 
-use crate::DEVICE_LIST;
-
 #[derive(Debug)]
 pub enum GuiError {
     Startup,
@@ -20,7 +18,7 @@ pub enum GuiError {
 static GUI_SENDER: OnceLock<SyncSender<()>> = OnceLock::new();
 
 pub fn show_control_panel() -> Result<(), GuiError> {
-    crate::rlog!("[gui] opening control panel");
+    tracing::info!("opening control panel");
 
     let sender = GUI_SENDER.get_or_init(|| {
         let (tx, rx) = mpsc::sync_channel::<()>(4);
@@ -99,7 +97,7 @@ fn make_device_selector(
             exp.set_subtitle(&label);
             exp.set_expanded(false);
             on_select_clone(&id);
-            crate::rlog!("[gui] {} selected: {} (id={})", exp.title(), label, id);
+            tracing::info!("{} selected: {} (id={})", exp.title(), label, id);
         });
 
         checks.borrow_mut().push(check);
@@ -107,6 +105,53 @@ fn make_device_selector(
     }
 
     expander
+}
+
+fn selected_index(opts: &[(&str, &str)], selected: &std::sync::RwLock<String>) -> usize {
+    let current = selected.read().map(|g| g.clone()).unwrap_or_default();
+    opts.iter().position(|(_, id)| *id == current).unwrap_or(0)
+}
+
+fn populate_devices(group: &adw::PreferencesGroup, rows: &Rc<RefCell<Vec<adw::ExpanderRow>>>) {
+    for old in rows.borrow_mut().drain(..) {
+        group.remove(&old);
+    }
+
+    let device_list = crate::DEVICE_LIST.read().ok();
+    let empty: Vec<(String, String)> = Vec::new();
+    let (sink_names, source_names) = match &device_list {
+        Some(guard) => (&guard.0, &guard.1),
+        None => (&empty, &empty),
+    };
+
+    let mut sink_opts: Vec<(&str, &str)> = vec![("Follow default", "")];
+    sink_opts.extend(sink_names.iter().map(|(n, id)| (n.as_str(), id.as_str())));
+    let mut source_opts: Vec<(&str, &str)> = vec![("Follow default", "")];
+    source_opts.extend(source_names.iter().map(|(n, id)| (n.as_str(), id.as_str())));
+
+    let sink_default = selected_index(&sink_opts, &crate::SELECTED_SINK);
+    let source_default = selected_index(&source_opts, &crate::SELECTED_SOURCE);
+
+    let output_selector = make_device_selector("Output device", &sink_opts, sink_default, |id| {
+        if let Ok(mut w) = crate::SELECTED_SINK.write() {
+            *w = id.to_string();
+        }
+        crate::driver::set_output_target(id);
+        tracing::info!("selected sink id: {}", id);
+    });
+
+    let input_selector = make_device_selector("Input device", &source_opts, source_default, |id| {
+        if let Ok(mut w) = crate::SELECTED_SOURCE.write() {
+            *w = id.to_string();
+        }
+        crate::driver::set_input_target(id);
+        tracing::info!("selected source id: {}", id);
+    });
+
+    group.add(&output_selector);
+    group.add(&input_selector);
+    rows.borrow_mut().push(output_selector);
+    rows.borrow_mut().push(input_selector);
 }
 
 fn make_buffer_selector(default: usize) -> adw::ComboRow {
@@ -159,17 +204,10 @@ struct DebugWidgets {
 }
 
 fn refresh_debug(w: &DebugWidgets) {
-    let out_running = crate::PW_STREAM_SENDER
-        .read()
-        .map(|g| g.is_some())
-        .unwrap_or(false);
-    let in_running = crate::PW_INPUT_STREAM_SENDER
-        .read()
-        .map(|g| g.is_some())
-        .unwrap_or(false);
+    let running = crate::STREAM_RUNNING.load(Ordering::Relaxed);
 
-    apply_status(&w.out_status, out_running);
-    apply_status(&w.in_status, in_running);
+    apply_status(&w.out_status, running);
+    apply_status(&w.in_status, running);
 
     w.buf_idx.set_subtitle(
         &crate::DBG_CURRENT_BUFFER_IDX
@@ -330,36 +368,38 @@ fn build_window(app: &Application) -> adw::ApplicationWindow {
 
     let debug_page = build_debug_page();
 
-    let (sink_names, source_names) = DEVICE_LIST
-        .get()
-        .map(|(s, r)| (s.as_slice(), r.as_slice()))
-        .unwrap_or((&[], &[]));
-
-    let mut sink_opts: Vec<(&str, &str)> = vec![("System Default", "")];
-    sink_opts.extend(sink_names.iter().map(|(n, id)| (n.as_str(), id.as_str())));
-
-    let mut source_opts: Vec<(&str, &str)> = vec![("System Default", "")];
-    source_opts.extend(source_names.iter().map(|(n, id)| (n.as_str(), id.as_str())));
-
-    let output_selector = make_device_selector("Output device", &sink_opts, 0, |id| {
-        if let Ok(mut w) = crate::SELECTED_SINK.write() {
-            *w = id.to_string();
-        }
-        crate::driver::set_output_target(id);
-        crate::rlog!("[gui] selected sink id: {}", id);
-    });
-
-    let input_selector = make_device_selector("Input device", &source_opts, 0, |id| {
-        if let Ok(mut w) = crate::SELECTED_SOURCE.write() {
-            *w = id.to_string();
-        }
-        crate::driver::set_input_target(id);
-        crate::rlog!("[gui] selected source id: {}", id);
-    });
-
     let device_group = adw::PreferencesGroup::builder().title("Devices").build();
-    device_group.add(&output_selector);
-    device_group.add(&input_selector);
+    let device_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
+    populate_devices(&device_group, &device_rows);
+
+    let device_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    {
+        let group = device_group.clone();
+        let rows = device_rows.clone();
+        let timer = device_timer.clone();
+        device_group.connect_map(move |_| {
+            let group = group.clone();
+            let rows = rows.clone();
+            let last_gen = std::cell::Cell::new(crate::DEVICE_GENERATION.load(Ordering::Relaxed));
+            let id = glib::timeout_add_local(Duration::from_millis(500), move || {
+                let current = crate::DEVICE_GENERATION.load(Ordering::Relaxed);
+                if current != last_gen.get() {
+                    last_gen.set(current);
+                    populate_devices(&group, &rows);
+                }
+                glib::ControlFlow::Continue
+            });
+            *timer.borrow_mut() = Some(id);
+        });
+    }
+    {
+        let timer = device_timer.clone();
+        device_group.connect_unmap(move |_| {
+            if let Some(id) = timer.borrow_mut().take() {
+                id.remove();
+            }
+        });
+    }
 
     let buffer_selector = make_buffer_selector(2);
     buffer_selector.connect_selected_notify(|row| {
