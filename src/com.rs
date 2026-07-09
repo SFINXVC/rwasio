@@ -102,7 +102,7 @@ impl<T: AsioClass> AsioObject<T> {
         riid: Refiid,
         ppv: *mut *mut c_void,
     ) -> HResult {
-        if ppv.is_null() {
+        if riid.is_null() || ppv.is_null() {
             return E_POINTER;
         }
 
@@ -271,7 +271,11 @@ impl<T: AsioClass> AsioObject<T> {
         if clocks.is_null() || num.is_null() {
             return Error::InvalidParameter;
         }
-        let slice = core::slice::from_raw_parts_mut(clocks, *num as usize);
+        let n = *num;
+        if n <= 0 {
+            return Error::InvalidParameter;
+        }
+        let slice = core::slice::from_raw_parts_mut(clocks, n as usize);
         match obj.inner.get_clock_sources(slice) {
             Ok(n) => {
                 *num = n;
@@ -325,6 +329,9 @@ impl<T: AsioClass> AsioObject<T> {
     ) -> Error {
         let obj = &mut *(this as *mut AsioObject<T>);
         if buffer_infos.is_null() || callbacks.is_null() {
+            return Error::InvalidParameter;
+        }
+        if num_channels <= 0 {
             return Error::InvalidParameter;
         }
         let slice = core::slice::from_raw_parts_mut(buffer_infos, num_channels as usize);
@@ -403,6 +410,10 @@ impl<T: AsioClass> ClassFactory<T> {
         riid: Refiid,
         ppv: *mut *mut c_void,
     ) -> HResult {
+        if riid.is_null() || ppv.is_null() {
+            return E_POINTER;
+        }
+
         let iid = *riid;
         tracing::trace!(
             "ClassFactory::query_interface iid={:08x}-{:04x}-{:04x}",
@@ -446,6 +457,16 @@ impl<T: AsioClass> ClassFactory<T> {
         riid: Refiid,
         ppv: *mut *mut c_void,
     ) -> HResult {
+        tracing::trace!("ClassFactory::create_instance called");
+        if riid.is_null() {
+            tracing::trace!("create_instance: riid null -> E_POINTER");
+            return E_POINTER;
+        }
+        if ppv.is_null() {
+            tracing::trace!("create_instance: ppv null -> E_POINTER");
+            return E_POINTER;
+        }
+
         let iid = *riid;
         tracing::trace!(
             "create_instance riid={:08x}-{:04x}-{:04x}",
@@ -453,12 +474,6 @@ impl<T: AsioClass> ClassFactory<T> {
             iid.data2,
             iid.data3
         );
-
-        tracing::trace!("ClassFactory::create_instance called");
-        if ppv.is_null() {
-            tracing::trace!("create_instance: ppv null -> E_POINTER");
-            return E_POINTER;
-        }
 
         *ppv = ptr::null_mut();
 
@@ -478,13 +493,10 @@ impl<T: AsioClass> ClassFactory<T> {
     }
 
     unsafe extern "win64" fn lock_server(_this: *mut IClassFactory, lock: Bool) -> HResult {
-        match lock {
-            Bool::True => {
-                SERVER_LOCKS.fetch_add(1, Ordering::Relaxed);
-            }
-            Bool::False => {
-                SERVER_LOCKS.fetch_sub(1, Ordering::Relaxed);
-            }
+        if lock.as_bool() {
+            SERVER_LOCKS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            SERVER_LOCKS.fetch_sub(1, Ordering::Relaxed);
         }
 
         S_OK
@@ -503,9 +515,9 @@ pub unsafe fn dll_get_class_object<T: AsioClass>(
     crate::init_logging();
     tracing::trace!("DllGetClassObject called ppv={:?} rclsid={:?}", ppv, rclsid);
 
-    tracing::trace!("checking ppv null");
-    if ppv.is_null() {
-        tracing::trace!("ppv null -> E_POINTER");
+    tracing::trace!("checking ppv/rclsid/riid null");
+    if ppv.is_null() || rclsid.is_null() || riid.is_null() {
+        tracing::trace!("ppv/rclsid/riid null -> E_POINTER");
         return E_POINTER;
     }
 
@@ -538,6 +550,10 @@ pub unsafe fn dll_get_class_object<T: AsioClass>(
 }
 
 pub fn dll_can_unload_now() -> HResult {
+    if crate::MODULE_PINNED.load(Ordering::SeqCst) {
+        return S_FALSE;
+    }
+
     if OBJECT_COUNT.load(Ordering::Relaxed) == 0 && SERVER_LOCKS.load(Ordering::Relaxed) == 0 {
         S_OK
     } else {

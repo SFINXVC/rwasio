@@ -2,11 +2,16 @@ use core::ffi::{c_char, c_void};
 
 pub type SampleRate = f64;
 
-#[repr(i32)]
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Bool {
-    False = 0,
-    True = 1,
+pub struct Bool(pub i32);
+impl Bool {
+    pub const FALSE: Bool = Bool(0);
+    pub const TRUE: Bool = Bool(1);
+    #[inline]
+    pub fn as_bool(self) -> bool {
+        self.0 != 0
+    }
 }
 
 #[repr(i32)]

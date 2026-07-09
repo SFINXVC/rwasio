@@ -211,7 +211,7 @@ impl Asio for RWAsioDriver {
             }
         }
 
-        Bool::True
+        Bool::TRUE
     }
 
     fn get_driver_name(&self) -> &str {
@@ -283,7 +283,7 @@ impl Asio for RWAsioDriver {
                 if ptr != 0 {
                     let f: unsafe extern "win64" fn(i32, crate::asio::Bool) =
                         unsafe { core::mem::transmute(ptr) };
-                    unsafe { f(idx as i32, crate::asio::Bool::True) };
+                    unsafe { f(idx as i32, crate::asio::Bool::TRUE) };
                 }
 
                 for ch in 0..channels_out {
@@ -405,7 +405,7 @@ impl Asio for RWAsioDriver {
             index: 0,
             associated_channel: -1,
             associated_group: -1,
-            is_current_source: Bool::True,
+            is_current_source: Bool::TRUE,
             name,
         };
 
@@ -426,7 +426,7 @@ impl Asio for RWAsioDriver {
     }
 
     fn get_channel_info(&self, info: &mut ChannelInfo) -> AsioResult<()> {
-        let is_input = info.is_input == Bool::True;
+        let is_input = info.is_input.as_bool();
         let channel = info.channel;
         let channel_count = if is_input {
             self.num_inputs
@@ -443,7 +443,7 @@ impl Asio for RWAsioDriver {
         let number = channel + 1;
         write_cstr(&mut name, &format!("{prefix} {number}"));
 
-        info.is_active = Bool::True;
+        info.is_active = Bool::TRUE;
         info.channel_group = 0;
         info.sample_type = SampleType::Float32Lsb;
         info.name = name;
@@ -480,7 +480,7 @@ impl Asio for RWAsioDriver {
         let buffer_bytes = buffer_size as usize * SAMPLE_BYTES;
 
         for info in &mut *buffer_infos {
-            let is_input = info.is_input == Bool::True;
+            let is_input = info.is_input.as_bool();
             let channel_num = info.channel_num;
             let available_channels = if is_input {
                 self.num_inputs
@@ -505,7 +505,7 @@ impl Asio for RWAsioDriver {
         if let Ok(mut ptrs) = ASIO_OUTPUT_PTRS.lock() {
             ptrs.clear();
             for info in buffer_infos.iter() {
-                if info.is_input == Bool::False {
+                if !info.is_input.as_bool() {
                     ptrs.push([info.buffers[0] as usize, info.buffers[1] as usize]);
                 }
             }
@@ -514,7 +514,7 @@ impl Asio for RWAsioDriver {
         if let Ok(mut ptrs) = ASIO_INPUT_PTRS.lock() {
             ptrs.clear();
             for info in buffer_infos.iter() {
-                if info.is_input == Bool::True {
+                if info.is_input.as_bool() {
                     ptrs.push([info.buffers[0] as usize, info.buffers[1] as usize]);
                 }
             }
