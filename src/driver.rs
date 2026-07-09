@@ -3,7 +3,7 @@ use crate::backends::pipewire::PipeWireAudioBackend;
 use crate::com::AsioClass;
 use crate::{DEVICE_LIST, asio::*};
 use core::ffi::c_char;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 unsafe extern "win64" {
     fn CreateThread(
@@ -28,18 +28,22 @@ pub struct RWAsioDriver {
     pub buffer_size_granularity: i32,
     initialized: bool,
     running: bool,
-    sample_position: u64,
+    error_message: String,
     buffers: Vec<Box<[u8]>>,
 }
 
 static PREFERRED_BUFFER_SIZE: AtomicI32 = AtomicI32::new(BUFFER_SIZE_PREFERRED);
+static ASIO_BUFFER_FRAMES: AtomicI32 = AtomicI32::new(0);
 static ASIO_MESSAGE_FN: AtomicUsize = AtomicUsize::new(0);
 static RESET_PENDING: AtomicBool = AtomicBool::new(false);
 static RESET_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static BUFFER_SWITCH_FN: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_SWITCH_TIME_INFO_FN: AtomicUsize = AtomicUsize::new(0);
+static HOST_WANTS_TIME_INFO: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CURRENT_BUFFER_INDEX: AtomicI32 = AtomicI32::new(0);
+static SAMPLE_POSITION: AtomicU64 = AtomicU64::new(0);
 static ASIO_OUTPUT_PTRS: std::sync::Mutex<Vec<[usize; 2]>> = std::sync::Mutex::new(Vec::new());
 static ASIO_INPUT_PTRS: std::sync::Mutex<Vec<[usize; 2]>> = std::sync::Mutex::new(Vec::new());
 
@@ -61,18 +65,12 @@ pub fn set_input_target(node_id: &str) {
     tracing::info!("set_input_target id={:?}, reset pending", node_id);
 }
 
-pub fn refresh_devices() {
-    match crate::backends::pipewire::enumerate_devices() {
-        Ok((sinks, sources)) => {
-            let s = sinks.into_iter().map(|d| (d.name, d.id)).collect();
-            let r = sources.into_iter().map(|d| (d.name, d.id)).collect();
-            if let Ok(mut dl) = crate::DEVICE_LIST.write() {
-                *dl = (s, r);
-            }
-            tracing::info!("device list refreshed");
-        }
-        Err(e) => tracing::warn!("device refresh failed: {e}"),
-    }
+pub fn request_host_reset() {
+    RESET_PENDING.store(true, Ordering::Relaxed);
+}
+
+pub fn preferred_buffer_size() -> i32 {
+    PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed)
 }
 
 pub fn set_preferred_buffer_size(size: i32) {
@@ -131,7 +129,7 @@ impl Default for RWAsioDriver {
             buffer_size_granularity: BUFFER_SIZE_GRANULARITY,
             initialized: false,
             running: false,
-            sample_position: 0,
+            error_message: String::new(),
             buffers: Vec::new(),
         }
     }
@@ -153,8 +151,19 @@ fn samples_from_u64(value: u64) -> Samples {
     }
 }
 
-fn zero_timestamp() -> TimeStamp {
-    TimeStamp { hi: 0, lo: 0 }
+fn now_timestamp() -> TimeStamp {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    let ns = (ts.tv_sec as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec as u64);
+    TimeStamp {
+        hi: (ns >> 32) as u32,
+        lo: ns as u32,
+    }
 }
 
 impl AsioClass for RWAsioDriver {
@@ -177,6 +186,7 @@ impl Asio for RWAsioDriver {
         self.initialized = true;
 
         if !RESET_WORKER_STARTED.swap(true, Ordering::Relaxed) {
+            crate::MODULE_PINNED.store(true, Ordering::SeqCst);
             unsafe {
                 CreateThread(
                     core::ptr::null(),
@@ -201,14 +211,21 @@ impl Asio for RWAsioDriver {
                     crate::ACTIVE_BACKEND.get_or_init(|| std::sync::Mutex::new(Box::new(v)));
                     tracing::info!("device list populated");
                     if !MONITOR_STARTED.swap(true, Ordering::Relaxed) {
+                        crate::MODULE_PINNED.store(true, Ordering::SeqCst);
                         crate::backends::pipewire::spawn_device_monitor();
                         tracing::info!("device monitor started");
                     }
                 }
                 Err(e) => {
                     tracing::error!("backend init failed: {}", e);
+                    self.error_message = format!("PipeWire backend failed: {e}");
+                    return Bool::FALSE;
                 }
             }
+        }
+
+        if crate::ACTIVE_BACKEND.get().is_none() {
+            return Bool::FALSE;
         }
 
         Bool::TRUE
@@ -223,7 +240,7 @@ impl Asio for RWAsioDriver {
     }
 
     fn get_error_message(&self) -> &str {
-        ""
+        &self.error_message
     }
 
     #[tracing::instrument(skip_all, fields(inputs = self.num_inputs, outputs = self.num_outputs, rate = self.sample_rate))]
@@ -239,10 +256,18 @@ impl Asio for RWAsioDriver {
 
         RUNNING.store(true, Ordering::SeqCst);
         CURRENT_BUFFER_INDEX.store(0, Ordering::SeqCst);
+        SAMPLE_POSITION.store(0, Ordering::SeqCst);
+
+        let frames = ASIO_BUFFER_FRAMES.load(Ordering::SeqCst);
+        if frames <= 0 {
+            RUNNING.store(false, Ordering::SeqCst);
+            return Err(AsioError::InvalidMode);
+        }
+        let buffer_size = frames as usize;
 
         let channels_in = self.num_inputs as usize;
         let channels_out = self.num_outputs as usize;
-        let buffer_size = PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed) as usize;
+        let sample_rate = self.sample_rate;
 
         // Snapshot raw ASIO buffer pointers. create_buffers always runs before
         // start(), and dispose_buffers only runs after stop() joins the RT
@@ -256,11 +281,13 @@ impl Asio for RWAsioDriver {
             .map(|g| g.clone())
             .unwrap_or_default();
 
-        let process: crate::backends::ProcessCallback =
-            Box::new(move |inputs: &[&[f32]], outputs: &mut [&mut [f32]]| {
+        let process: crate::backends::ProcessCallback = Box::new(
+            move |inputs: &[crate::backends::InPort], outputs: &mut [crate::backends::OutPort]| {
                 if !RUNNING.load(Ordering::Relaxed) {
-                    for out in outputs.iter_mut() {
-                        out.iter_mut().for_each(|s| *s = 0.0);
+                    for o in outputs.iter() {
+                        if !o.ptr.is_null() {
+                            unsafe { core::ptr::write_bytes(o.ptr, 0, o.len) };
+                        }
                     }
                     return;
                 }
@@ -270,40 +297,77 @@ impl Asio for RWAsioDriver {
 
                 for ch in 0..channels_in {
                     let Some(src) = inputs.get(ch) else { continue };
+                    if src.ptr.is_null() {
+                        continue;
+                    }
                     if let Some(&[p0, p1]) = input_ptrs.get(ch) {
                         let dst = if idx == 0 { p0 } else { p1 } as *mut f32;
                         if !dst.is_null() {
-                            let n = src.len().min(buffer_size);
-                            unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, n) };
+                            let n = src.len.min(buffer_size);
+                            unsafe { core::ptr::copy_nonoverlapping(src.ptr, dst, n) };
                         }
                     }
                 }
 
-                let ptr = BUFFER_SWITCH_FN.load(Ordering::Relaxed);
-                if ptr != 0 {
-                    let f: unsafe extern "win64" fn(i32, crate::asio::Bool) =
-                        unsafe { core::mem::transmute(ptr) };
-                    unsafe { f(idx as i32, crate::asio::Bool::TRUE) };
+                let wants_time_info = HOST_WANTS_TIME_INFO.load(Ordering::Relaxed);
+                let time_info_ptr = BUFFER_SWITCH_TIME_INFO_FN.load(Ordering::Relaxed);
+                let position_before = SAMPLE_POSITION.load(Ordering::Relaxed);
+
+                if wants_time_info && time_info_ptr != 0 {
+                    let f: unsafe extern "win64" fn(
+                        *mut Time,
+                        i32,
+                        crate::asio::Bool,
+                    ) -> *mut Time = unsafe { core::mem::transmute(time_info_ptr) };
+
+                    let mut time: Time = unsafe { core::mem::zeroed() };
+                    unsafe {
+                        let p = &mut time as *mut Time;
+                        let ti = core::ptr::addr_of_mut!((*p).time_info);
+                        core::ptr::addr_of_mut!((*ti).speed).write_unaligned(1.0);
+                        core::ptr::addr_of_mut!((*ti).system_time).write_unaligned(now_timestamp());
+                        core::ptr::addr_of_mut!((*ti).sample_position)
+                            .write_unaligned(samples_from_u64(position_before));
+                        core::ptr::addr_of_mut!((*ti).sample_rate).write_unaligned(sample_rate);
+                        core::ptr::addr_of_mut!((*ti).flags).write_unaligned(
+                            TimeInfoFlags::SYSTEM_TIME_VALID
+                                | TimeInfoFlags::SAMPLE_POSITION_VALID
+                                | TimeInfoFlags::SAMPLE_RATE_VALID,
+                        );
+                    }
+                    unsafe { f(&mut time as *mut Time, idx as i32, Bool::TRUE) };
+                } else {
+                    let ptr = BUFFER_SWITCH_FN.load(Ordering::Relaxed);
+                    if ptr != 0 {
+                        let f: unsafe extern "win64" fn(i32, crate::asio::Bool) =
+                            unsafe { core::mem::transmute(ptr) };
+                        unsafe { f(idx as i32, crate::asio::Bool::TRUE) };
+                    }
                 }
 
                 for ch in 0..channels_out {
-                    let Some(dst) = outputs.get_mut(ch) else {
+                    let Some(dst) = outputs.get(ch) else {
                         continue;
                     };
+                    if dst.ptr.is_null() {
+                        continue;
+                    }
                     let src = output_ptrs
                         .get(ch)
                         .map(|&[p0, p1]| if idx == 0 { p0 } else { p1 })
                         .unwrap_or(0) as *const f32;
-                    let n = dst.len().min(buffer_size);
+                    let n = dst.len.min(buffer_size);
                     if src.is_null() {
-                        dst.iter_mut().for_each(|s| *s = 0.0);
+                        unsafe { core::ptr::write_bytes(dst.ptr, 0, dst.len) };
                     } else {
-                        unsafe { core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), n) };
+                        unsafe { core::ptr::copy_nonoverlapping(src, dst.ptr, n) };
                     }
                 }
 
+                SAMPLE_POSITION.fetch_add(buffer_size as u64, Ordering::Relaxed);
                 CURRENT_BUFFER_INDEX.fetch_xor(1, Ordering::Relaxed);
-            });
+            },
+        );
 
         let output_target = parse_target(
             &crate::SELECTED_SINK
@@ -337,6 +401,8 @@ impl Asio for RWAsioDriver {
             }
         } else {
             tracing::warn!("no backend available");
+            RUNNING.store(false, Ordering::SeqCst);
+            return Err(AsioError::HwMalfunction);
         }
 
         self.running = true;
@@ -366,8 +432,13 @@ impl Asio for RWAsioDriver {
     }
 
     fn get_latencies(&self) -> AsioResult<(i32, i32)> {
-        let buf = PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed);
-        Ok((buf, buf))
+        let f = ASIO_BUFFER_FRAMES.load(Ordering::SeqCst);
+        let f = if f > 0 {
+            f
+        } else {
+            PREFERRED_BUFFER_SIZE.load(Ordering::Relaxed)
+        };
+        Ok((f, f))
     }
 
     fn get_buffer_size(&self) -> AsioResult<(i32, i32, i32, i32)> {
@@ -379,7 +450,10 @@ impl Asio for RWAsioDriver {
         ))
     }
 
-    fn can_sample_rate(&self, _sample_rate: SampleRate) -> AsioResult<()> {
+    fn can_sample_rate(&self, sample_rate: SampleRate) -> AsioResult<()> {
+        if !sample_rate.is_finite() || !(8_000.0..=384_000.0).contains(&sample_rate) {
+            return Err(AsioError::InvalidParameter);
+        }
         Ok(())
     }
 
@@ -422,7 +496,10 @@ impl Asio for RWAsioDriver {
 
     fn get_sample_position(&self) -> AsioResult<(Samples, TimeStamp)> {
         fire_reset_if_pending();
-        Ok((samples_from_u64(self.sample_position), zero_timestamp()))
+        Ok((
+            samples_from_u64(SAMPLE_POSITION.load(Ordering::Relaxed)),
+            now_timestamp(),
+        ))
     }
 
     fn get_channel_info(&self, info: &mut ChannelInfo) -> AsioResult<()> {
@@ -463,6 +540,11 @@ impl Asio for RWAsioDriver {
         if let Some(f) = callbacks.buffer_switch {
             BUFFER_SWITCH_FN.store(f as usize, Ordering::Relaxed);
         }
+        if let Some(f) = callbacks.buffer_switch_time_info {
+            BUFFER_SWITCH_TIME_INFO_FN.store(f as usize, Ordering::Relaxed);
+        } else {
+            BUFFER_SWITCH_TIME_INFO_FN.store(0, Ordering::Relaxed);
+        }
 
         if !self.initialized {
             return Err(AsioError::InvalidMode);
@@ -471,6 +553,24 @@ impl Asio for RWAsioDriver {
         if !(self.buffer_size_min..=self.buffer_size_max).contains(&buffer_size) {
             return Err(AsioError::InvalidParameter);
         }
+
+        ASIO_BUFFER_FRAMES.store(buffer_size, Ordering::SeqCst);
+
+        let wants_time_info = if let Some(f) = callbacks.asio_message {
+            let has_time_info_cb = matches!(callbacks.buffer_switch_time_info, Some(_));
+            let ret = unsafe {
+                f(
+                    MessageSelector::SupportsTimeInfo as i32,
+                    0,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+            };
+            ret != 0 && has_time_info_cb
+        } else {
+            false
+        };
+        HOST_WANTS_TIME_INFO.store(wants_time_info, Ordering::Relaxed);
 
         self.buffers.clear();
         crate::DBG_ASIO_BUFFER_SIZE.store(buffer_size as u32, Ordering::Relaxed);
@@ -533,6 +633,15 @@ impl Asio for RWAsioDriver {
     fn dispose_buffers(&mut self) -> AsioResult<()> {
         tracing::info!("dispose_buffers");
         self.buffers.clear();
+        ASIO_BUFFER_FRAMES.store(0, Ordering::SeqCst);
+        BUFFER_SWITCH_FN.store(0, Ordering::Relaxed);
+        BUFFER_SWITCH_TIME_INFO_FN.store(0, Ordering::Relaxed);
+        if let Ok(mut ptrs) = ASIO_INPUT_PTRS.lock() {
+            ptrs.clear();
+        }
+        if let Ok(mut ptrs) = ASIO_OUTPUT_PTRS.lock() {
+            ptrs.clear();
+        }
         Ok(())
     }
 
