@@ -557,7 +557,8 @@ impl Asio for RWAsioDriver {
         ASIO_BUFFER_FRAMES.store(buffer_size, Ordering::SeqCst);
 
         let wants_time_info = if let Some(f) = callbacks.asio_message {
-            let has_time_info_cb = matches!(callbacks.buffer_switch_time_info, Some(_));
+            let time_info_cb = callbacks.buffer_switch_time_info;
+            let has_time_info_cb = time_info_cb.is_some();
             let ret = unsafe {
                 f(
                     MessageSelector::SupportsTimeInfo as i32,
