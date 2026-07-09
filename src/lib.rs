@@ -32,7 +32,6 @@ pub static DBG_SAMPLE_RATE: AtomicU32 = AtomicU32::new(44100);
 pub static DBG_NUM_INPUTS: AtomicU32 = AtomicU32::new(0);
 pub static DBG_NUM_OUTPUTS: AtomicU32 = AtomicU32::new(0);
 pub static DBG_CURRENT_BUFFER_IDX: AtomicU32 = AtomicU32::new(0);
-pub static DBG_STAGING_SAMPLES: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Error)]
 pub enum ApplicationError {

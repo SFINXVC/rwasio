@@ -6,7 +6,7 @@ use libadwaita as adw;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::time::Duration;
 
@@ -16,13 +16,22 @@ pub enum GuiError {
 }
 
 static GUI_SENDER: OnceLock<SyncSender<()>> = OnceLock::new();
+static PANEL_OPEN: AtomicBool = AtomicBool::new(false);
+
+const SIZES: [i32; 6] = [64, 128, 256, 512, 1024, 2048];
 
 pub fn show_control_panel() -> Result<(), GuiError> {
+    if PANEL_OPEN.swap(true, Ordering::SeqCst) {
+        tracing::info!("control panel already open, ignoring request");
+        return Ok(());
+    }
+
     tracing::info!("opening control panel");
 
     let sender = GUI_SENDER.get_or_init(|| {
-        let (tx, rx) = mpsc::sync_channel::<()>(4);
+        let (tx, rx) = mpsc::sync_channel::<()>(1);
 
+        crate::MODULE_PINNED.store(true, Ordering::SeqCst);
         std::thread::spawn(move || {
             for () in rx {
                 let app = Application::builder()
@@ -34,6 +43,7 @@ pub fn show_control_panel() -> Result<(), GuiError> {
                     let window = build_window(app);
                     let app_weak = app.downgrade();
                     window.connect_close_request(move |_| {
+                        PANEL_OPEN.store(false, Ordering::SeqCst);
                         if let Some(app) = app_weak.upgrade() {
                             app.quit();
                         }
@@ -49,7 +59,11 @@ pub fn show_control_panel() -> Result<(), GuiError> {
         tx
     });
 
-    sender.send(()).map_err(|_| GuiError::Startup)
+    if sender.try_send(()).is_err() {
+        PANEL_OPEN.store(false, Ordering::SeqCst);
+    }
+
+    Ok(())
 }
 
 fn make_device_selector(
@@ -200,7 +214,6 @@ struct DebugWidgets {
     asio_latency: adw::ActionRow,
     asio_in_ch: adw::ActionRow,
     asio_out_ch: adw::ActionRow,
-    cap_staging: adw::ActionRow,
 }
 
 fn refresh_debug(w: &DebugWidgets) {
@@ -244,13 +257,6 @@ fn refresh_debug(w: &DebugWidgets) {
     } else {
         "—".into()
     });
-
-    let staging = crate::DBG_STAGING_SAMPLES.load(Ordering::Relaxed);
-    w.cap_staging.set_subtitle(&if staging > 0 {
-        format!("{} samples", staging)
-    } else {
-        "—".into()
-    });
 }
 
 fn build_debug_page() -> adw::NavigationPage {
@@ -278,13 +284,6 @@ fn build_debug_page() -> adw::NavigationPage {
     asio_group.add(&asio_in_row);
     asio_group.add(&asio_out_row);
 
-    let cap_staging_row = stat_row("Ring Occupancy", "—");
-
-    let capture_group = adw::PreferencesGroup::builder()
-        .title("PipeWire Capture")
-        .build();
-    capture_group.add(&cap_staging_row);
-
     let vbox = gtk4::Box::builder()
         .orientation(Orientation::Vertical)
         .spacing(24)
@@ -295,7 +294,6 @@ fn build_debug_page() -> adw::NavigationPage {
         .build();
     vbox.append(&status_group);
     vbox.append(&asio_group);
-    vbox.append(&capture_group);
 
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -325,7 +323,6 @@ fn build_debug_page() -> adw::NavigationPage {
         asio_latency: asio_latency_row,
         asio_in_ch: asio_in_row,
         asio_out_ch: asio_out_row,
-        cap_staging: cap_staging_row,
     });
 
     let source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
@@ -401,10 +398,13 @@ fn build_window(app: &Application) -> adw::ApplicationWindow {
         });
     }
 
-    let buffer_selector = make_buffer_selector(2);
+    let cur = crate::driver::preferred_buffer_size();
+    let default = SIZES.iter().position(|&s| s == cur).unwrap_or(2);
+    let buffer_selector = make_buffer_selector(default);
     buffer_selector.connect_selected_notify(|row| {
-        const SIZES: [i32; 6] = [64, 128, 256, 512, 1024, 2048];
-        if let Some(&size) = SIZES.get(row.selected() as usize) {
+        if let Some(&size) = SIZES.get(row.selected() as usize)
+            && size != crate::driver::preferred_buffer_size()
+        {
             crate::driver::set_preferred_buffer_size(size);
         }
     });
