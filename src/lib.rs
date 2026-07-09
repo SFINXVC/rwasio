@@ -25,6 +25,7 @@ pub static ACTIVE_BACKEND: OnceLock<
 
 pub static STREAM_RUNNING: AtomicBool = AtomicBool::new(false);
 pub static DEVICE_GENERATION: AtomicU32 = AtomicU32::new(0);
+pub static MODULE_PINNED: AtomicBool = AtomicBool::new(false);
 
 pub static DBG_ASIO_BUFFER_SIZE: AtomicU32 = AtomicU32::new(0);
 pub static DBG_SAMPLE_RATE: AtomicU32 = AtomicU32::new(44100);
