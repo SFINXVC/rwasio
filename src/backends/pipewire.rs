@@ -9,7 +9,7 @@ use pipewire_sys as pw;
 
 use crate::{
     ApplicationError, ApplicationResult,
-    backends::{AudioBackend, AudioDevice, DuplexConfig, ProcessCallback},
+    backends::{AudioBackend, AudioDevice, DuplexConfig, InPort, OutPort, ProcessCallback},
 };
 
 unsafe extern "win64" {
@@ -220,37 +220,53 @@ struct FilterData {
     out_ports: Vec<*mut c_void>,
     buffer_size: usize,
     process: ProcessCallback,
+    in_bufs: Vec<*mut pw::pw_buffer>,
+    out_bufs: Vec<*mut pw::pw_buffer>,
+    in_views: Vec<InPort>,
+    out_views: Vec<OutPort>,
+    quantum_mismatch_reported: bool,
 }
 
-unsafe fn port_in_slice<'a>(b: *mut pw::pw_buffer, n: usize) -> &'a [f32] {
+unsafe fn port_in_view(b: *mut pw::pw_buffer, n: usize) -> (*const f32, usize) {
     let buf = unsafe { (*b).buffer };
     if buf.is_null() || unsafe { (*buf).n_datas } == 0 {
-        return &[];
+        return (core::ptr::null(), 0);
     }
     let d = unsafe { &*(*buf).datas };
     if d.data.is_null() {
-        return &[];
+        return (core::ptr::null(), 0);
     }
-    let avail = if d.chunk.is_null() {
-        n
-    } else {
-        (unsafe { (*d.chunk).size } as usize) / 4
-    };
-    let count = avail.min(n);
-    unsafe { core::slice::from_raw_parts(d.data as *const f32, count) }
+    let maxsize = d.maxsize as usize;
+    if d.chunk.is_null() {
+        let count = n.min(maxsize / 4);
+        return (d.data as *const f32, count);
+    }
+    let chunk = unsafe { &*d.chunk };
+    let off = chunk.offset as usize;
+    if !off.is_multiple_of(4) || off > maxsize {
+        return (core::ptr::null(), 0);
+    }
+    let avail_bytes = maxsize - off;
+    let size = (chunk.size as usize).min(avail_bytes);
+    let count = (size / 4).min(n);
+    if count == 0 {
+        return (core::ptr::null(), 0);
+    }
+    let ptr = unsafe { (d.data as *const u8).add(off) as *const f32 };
+    (ptr, count)
 }
 
-unsafe fn port_out_slice<'a>(b: *mut pw::pw_buffer, n: usize) -> &'a mut [f32] {
+unsafe fn port_out_view(b: *mut pw::pw_buffer, n: usize) -> (*mut f32, usize) {
     let buf = unsafe { (*b).buffer };
     if buf.is_null() || unsafe { (*buf).n_datas } == 0 {
-        return &mut [];
+        return (core::ptr::null_mut(), 0);
     }
     let d = unsafe { &*(*buf).datas };
     if d.data.is_null() {
-        return &mut [];
+        return (core::ptr::null_mut(), 0);
     }
     let count = ((d.maxsize as usize) / 4).min(n);
-    unsafe { core::slice::from_raw_parts_mut(d.data as *mut f32, count) }
+    (d.data as *mut f32, count)
 }
 
 unsafe fn set_out_chunk(b: *mut pw::pw_buffer, n: usize) {
@@ -272,53 +288,81 @@ unsafe fn set_out_chunk(b: *mut pw::pw_buffer, n: usize) {
     }
 }
 
-unsafe extern "C" fn on_process(data: *mut c_void, _position: *mut spa::spa_io_position) {
+unsafe extern "C" fn on_process(data: *mut c_void, position: *mut spa::spa_io_position) {
     if data.is_null() {
         return;
     }
     let fd = unsafe { &mut *(data as *mut FilterData) };
+
+    if !position.is_null() {
+        let duration = unsafe { (*position).clock.duration };
+        if duration != 0 && duration != fd.buffer_size as u64 && !fd.quantum_mismatch_reported {
+            fd.quantum_mismatch_reported = true;
+            crate::driver::request_host_reset();
+        }
+    }
+
     let n = fd.buffer_size;
 
-    let mut in_bufs: Vec<*mut pw::pw_buffer> = Vec::with_capacity(fd.in_ports.len());
-    let mut inputs: Vec<&[f32]> = Vec::with_capacity(fd.in_ports.len());
+    fd.in_bufs.clear();
+    fd.in_views.clear();
     for &p in &fd.in_ports {
         let b = unsafe { pw::pw_filter_dequeue_buffer(p) };
-        in_bufs.push(b);
+        fd.in_bufs.push(b);
         if b.is_null() {
-            inputs.push(&[]);
+            fd.in_views.push(InPort {
+                ptr: core::ptr::null(),
+                len: 0,
+            });
         } else {
-            inputs.push(unsafe { port_in_slice(b, n) });
+            let (ptr, len) = unsafe { port_in_view(b, n) };
+            fd.in_views.push(InPort { ptr, len });
         }
     }
 
-    let mut out_bufs: Vec<*mut pw::pw_buffer> = Vec::with_capacity(fd.out_ports.len());
-    let mut outputs: Vec<&mut [f32]> = Vec::with_capacity(fd.out_ports.len());
+    fd.out_bufs.clear();
+    fd.out_views.clear();
     for &p in &fd.out_ports {
         let b = unsafe { pw::pw_filter_dequeue_buffer(p) };
-        out_bufs.push(b);
+        fd.out_bufs.push(b);
         if b.is_null() {
-            outputs.push(&mut []);
+            fd.out_views.push(OutPort {
+                ptr: core::ptr::null_mut(),
+                len: 0,
+            });
         } else {
-            outputs.push(unsafe { port_out_slice(b, n) });
+            let (ptr, len) = unsafe { port_out_view(b, n) };
+            fd.out_views.push(OutPort { ptr, len });
         }
     }
 
-    (fd.process)(&inputs, &mut outputs);
+    let FilterData {
+        in_views,
+        out_views,
+        process,
+        ..
+    } = &mut *fd;
+    (process)(in_views, out_views);
 
-    for (i, &b) in out_bufs.iter().enumerate() {
+    for ((&b, &port), view) in fd
+        .out_bufs
+        .iter()
+        .zip(fd.out_ports.iter())
+        .zip(fd.out_views.iter())
+    {
         if b.is_null() {
             continue;
         }
         unsafe {
-            set_out_chunk(b, n);
-            pw::pw_filter_queue_buffer(fd.out_ports[i], b);
+            set_out_chunk(b, view.len);
+            pw::pw_filter_queue_buffer(port, b);
         }
     }
-    for (i, &b) in in_bufs.iter().enumerate() {
+    for (&b, &port) in fd.in_bufs.iter().zip(fd.in_ports.iter()) {
         if b.is_null() {
             continue;
         }
-        unsafe { pw::pw_filter_queue_buffer(fd.in_ports[i], b) };
+        unsafe { pw::pw_filter_queue_buffer(port, b) };
     }
 }
 
@@ -569,12 +613,29 @@ fn connect_ports(config: &DuplexConfig) -> ApplicationResult<()> {
         nodes_b.iter().find(|x| x.class == class).map(|x| x.id)
     };
 
-    let sink_node = config
-        .output_target
-        .or_else(|| resolve_default(default_sink.borrow().clone(), "Audio/Sink"));
-    let source_node = config
-        .input_target
-        .or_else(|| resolve_default(default_source.borrow().clone(), "Audio/Source"));
+    let validate_target = |target: Option<u32>, class: &str| -> Option<u32> {
+        target.filter(|id| nodes_b.iter().any(|n| n.id == *id && n.class == class))
+    };
+
+    let output_target = validate_target(config.output_target, "Audio/Sink");
+    if config.output_target.is_some() && output_target.is_none() {
+        tracing::warn!(
+            "configured output_target {:?} no longer present as Audio/Sink; falling back to default",
+            config.output_target
+        );
+    }
+    let input_target = validate_target(config.input_target, "Audio/Source");
+    if config.input_target.is_some() && input_target.is_none() {
+        tracing::warn!(
+            "configured input_target {:?} no longer present as Audio/Source; falling back to default",
+            config.input_target
+        );
+    }
+
+    let sink_node =
+        output_target.or_else(|| resolve_default(default_sink.borrow().clone(), "Audio/Sink"));
+    let source_node =
+        input_target.or_else(|| resolve_default(default_source.borrow().clone(), "Audio/Source"));
 
     let mk = |out_node: u32,
               out_port: u32,
@@ -685,6 +746,7 @@ fn run_device_monitor() -> ApplicationResult<()> {
 }
 
 pub fn spawn_device_monitor() {
+    crate::MODULE_PINNED.store(true, Ordering::SeqCst);
     std::thread::spawn(|| {
         if let Err(e) = run_device_monitor() {
             tracing::warn!("device monitor stopped: {e}");
@@ -741,6 +803,32 @@ pub fn enumerate_devices() -> ApplicationResult<(Vec<AudioDevice>, Vec<AudioDevi
     Ok((sinks, sources))
 }
 
+unsafe fn teardown(
+    loop_: *mut pw::pw_thread_loop,
+    ctx: *mut pw::pw_context,
+    core: *mut pw::pw_core,
+    filter: *mut pw::pw_filter,
+    locked: bool,
+) {
+    if !filter.is_null() {
+        if !locked {
+            unsafe { pw::pw_thread_loop_lock(loop_) };
+        }
+        unsafe { pw::pw_filter_destroy(filter) };
+        unsafe { pw::pw_thread_loop_unlock(loop_) };
+    } else if locked {
+        unsafe { pw::pw_thread_loop_unlock(loop_) };
+    }
+    if !core.is_null() {
+        unsafe { pw::pw_core_disconnect(core) };
+    }
+    unsafe { pw::pw_thread_loop_stop(loop_) };
+    if !ctx.is_null() {
+        unsafe { pw::pw_context_destroy(ctx) };
+    }
+    unsafe { pw::pw_thread_loop_destroy(loop_) };
+}
+
 pub struct PipeWireAudioBackend {
     sinks: Vec<AudioDevice>,
     sources: Vec<AudioDevice>,
@@ -767,11 +855,18 @@ impl PipeWireAudioBackend {
     ) -> ApplicationResult<RunningStream> {
         ensure_init();
 
+        let in_ch = config.input_channels as usize;
+        let out_ch = config.output_channels as usize;
         let mut data = Box::new(FilterData {
             in_ports: Vec::new(),
             out_ports: Vec::new(),
             buffer_size: config.buffer_size as usize,
             process,
+            in_bufs: Vec::with_capacity(in_ch),
+            out_bufs: Vec::with_capacity(out_ch),
+            in_views: Vec::with_capacity(in_ch),
+            out_views: Vec::with_capacity(out_ch),
+            quantum_mismatch_reported: false,
         });
         let data_ptr = data.as_mut() as *mut FilterData as *mut c_void;
 
@@ -785,22 +880,35 @@ impl PipeWireAudioBackend {
             pw::pw_context_new(pw::pw_thread_loop_get_loop(loop_), core::ptr::null_mut(), 0)
         };
         if ctx.is_null() {
-            unsafe { pw::pw_thread_loop_destroy(loop_) };
+            unsafe {
+                teardown(
+                    loop_,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    false,
+                )
+            };
             return Err(err("pw_context_new failed"));
         }
 
         let data_loop = unsafe { pw::pw_context_get_data_loop(ctx) };
         let rt = RtThreadUtils::new();
         unsafe {
-            pw::pw_data_loop_set_thread_utils(data_loop, rt.as_ptr());
             pw::pw_data_loop_stop(data_loop);
+            pw::pw_data_loop_set_thread_utils(data_loop, rt.as_ptr());
         }
 
         if unsafe { pw::pw_thread_loop_start(loop_) } < 0 {
             unsafe {
-                pw::pw_context_destroy(ctx);
-                pw::pw_thread_loop_destroy(loop_);
-            }
+                teardown(
+                    loop_,
+                    ctx,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    false,
+                )
+            };
             return Err(err("pw_thread_loop_start failed"));
         }
 
@@ -809,23 +917,21 @@ impl PipeWireAudioBackend {
         let core = unsafe { pw::pw_context_connect(ctx, core::ptr::null_mut(), 0) };
         if core.is_null() {
             unsafe {
-                pw::pw_thread_loop_unlock(loop_);
-                pw::pw_thread_loop_stop(loop_);
-                pw::pw_context_destroy(ctx);
-                pw::pw_thread_loop_destroy(loop_);
-            }
+                teardown(
+                    loop_,
+                    ctx,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    true,
+                )
+            };
             return Err(err("pw_context_connect failed (is the daemon running?)"));
         }
 
         let nprops = match node_props(&config) {
             Ok(p) => p,
             Err(e) => {
-                unsafe {
-                    pw::pw_thread_loop_unlock(loop_);
-                    pw::pw_thread_loop_stop(loop_);
-                    pw::pw_context_destroy(ctx);
-                    pw::pw_thread_loop_destroy(loop_);
-                }
+                unsafe { teardown(loop_, ctx, core, core::ptr::null_mut(), true) };
                 return Err(e);
             }
         };
@@ -840,17 +946,18 @@ impl PipeWireAudioBackend {
             )
         };
         if filter.is_null() {
-            unsafe {
-                pw::pw_thread_loop_unlock(loop_);
-                pw::pw_thread_loop_stop(loop_);
-                pw::pw_context_destroy(ctx);
-                pw::pw_thread_loop_destroy(loop_);
-            }
+            unsafe { teardown(loop_, ctx, core, core::ptr::null_mut(), true) };
             return Err(err("pw_filter_new_simple failed"));
         }
 
         for i in 0..config.input_channels {
-            let pp = port_props(&format!("in_{}", i + 1))?;
+            let pp = match port_props(&format!("in_{}", i + 1)) {
+                Ok(p) => p,
+                Err(e) => {
+                    unsafe { teardown(loop_, ctx, core, filter, true) };
+                    return Err(e);
+                }
+            };
             let handle = unsafe {
                 pw::pw_filter_add_port(
                     filter,
@@ -863,12 +970,19 @@ impl PipeWireAudioBackend {
                 )
             };
             if handle.is_null() {
+                unsafe { teardown(loop_, ctx, core, filter, true) };
                 return Err(err("pw_filter_add_port (input) failed"));
             }
             data.in_ports.push(handle);
         }
         for i in 0..config.output_channels {
-            let pp = port_props(&format!("out_{}", i + 1))?;
+            let pp = match port_props(&format!("out_{}", i + 1)) {
+                Ok(p) => p,
+                Err(e) => {
+                    unsafe { teardown(loop_, ctx, core, filter, true) };
+                    return Err(e);
+                }
+            };
             let handle = unsafe {
                 pw::pw_filter_add_port(
                     filter,
@@ -881,6 +995,7 @@ impl PipeWireAudioBackend {
                 )
             };
             if handle.is_null() {
+                unsafe { teardown(loop_, ctx, core, filter, true) };
                 return Err(err("pw_filter_add_port (output) failed"));
             }
             data.out_ports.push(handle);
@@ -888,18 +1003,15 @@ impl PipeWireAudioBackend {
 
         if unsafe { pw::pw_filter_connect(filter, FILTER_FLAG_NONE, core::ptr::null_mut(), 0) } < 0
         {
-            unsafe { pw::pw_thread_loop_unlock(loop_) };
+            unsafe { teardown(loop_, ctx, core, filter, true) };
             return Err(err("pw_filter_connect failed"));
         }
 
-        unsafe {
-            pw::pw_thread_loop_unlock(loop_);
-            pw::pw_thread_loop_lock(loop_);
-            let started = pw::pw_data_loop_start(data_loop);
-            pw::pw_thread_loop_unlock(loop_);
-            if started < 0 {
-                return Err(err("pw_data_loop_start failed"));
-            }
+        let started = unsafe { pw::pw_data_loop_start(data_loop) };
+        unsafe { pw::pw_thread_loop_unlock(loop_) };
+        if started < 0 {
+            unsafe { teardown(loop_, ctx, core, filter, false) };
+            return Err(err("pw_data_loop_start failed"));
         }
 
         tracing::info!(
@@ -909,9 +1021,13 @@ impl PipeWireAudioBackend {
             config.buffer_size
         );
 
-        if let Err(e) = connect_ports(&config) {
-            tracing::warn!("linking failed: {e}");
-        }
+        crate::MODULE_PINNED.store(true, Ordering::SeqCst);
+        let link_config = config.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = connect_ports(&link_config) {
+                tracing::warn!("linking failed: {e}");
+            }
+        });
 
         Ok(RunningStream {
             loop_,
@@ -959,16 +1075,6 @@ impl AudioBackend for PipeWireAudioBackend {
                 pw::pw_thread_loop_destroy(r.loop_);
             }
         }
-        Ok(())
-    }
-
-    fn set_output_target(&mut self, id: Option<u32>) -> ApplicationResult<()> {
-        tracing::info!("set_output_target {:?} (applies on restart)", id);
-        Ok(())
-    }
-
-    fn set_input_target(&mut self, id: Option<u32>) -> ApplicationResult<()> {
-        tracing::info!("set_input_target {:?} (applies on restart)", id);
         Ok(())
     }
 }
